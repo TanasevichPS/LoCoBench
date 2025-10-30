@@ -186,4 +186,30 @@ phase4:
   
   # Timeout settings (seconds) - ENFORCED with asyncio.wait_for()
   task_timeout: 1800      # 30 minutes per task
-  session_timeout: 3600  # 60 minutes per session 
+  session_timeout: 3600  # 60 minutes per session
+
+# =============================================================================
+# RETRIEVAL CONFIGURATION - Retrieval-Augmented Generation (RAG)
+# =============================================================================
+
+retrieval:
+  # Enable/disable retrieval mechanism for hard and expert scenarios
+  enabled: false  # Set to true to enable retrieval
+  
+  # Difficulty levels where retrieval should be applied
+  difficulties:
+    - "hard"
+    - "expert"
+  
+  # Number of top-K code fragments to retrieve
+  top_k: 5
+  
+  # Retrieval method: "embedding" (uses sentence-transformers) or "keyword" (simple keyword matching)
+  method: "embedding"
+  
+  # Embedding model name (only used if method is "embedding")
+  # Recommended: "all-MiniLM-L6-v2" (fast, lightweight) or "all-mpnet-base-v2" (more accurate)
+  model_name: "all-MiniLM-L6-v2"
+  
+  # Chunk size for code splitting (in characters)
+  chunk_size: 512

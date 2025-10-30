@@ -26,6 +26,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
+from ..retrieval import retrieve_relevant, load_context_files_from_scenario
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -2189,9 +2190,90 @@ class LoCoBenchEvaluator:
                 session_content = task_prompt[session_key]
                 session_requirements.append(f"**{session_key.upper()}**: {session_content}")
             formatted_requirements = '\n\n'.join(session_requirements)
+            # For retrieval, use first session content as query
+            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
         else:
             # Regular scenario with string task_prompt
             formatted_requirements = str(task_prompt)
+            task_prompt_text = str(task_prompt)
+        
+        # Apply retrieval if enabled and scenario difficulty matches
+        retrieved_context = ""
+        difficulty = scenario.get('difficulty', '').lower()
+        retrieval_config = self.config.retrieval
+        
+        if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
+            try:
+                logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
+                
+                # Try to load context files content
+                context_files_content = {}
+                context_files_list = scenario.get('context_files', [])
+                
+                if isinstance(context_files_list, dict):
+                    # Already a dict with contents
+                    context_files_content = context_files_list
+                elif isinstance(context_files_list, list):
+                    # Try to load from generated_dir based on scenario metadata
+                    scenario_id = scenario.get('id', '')
+                    metadata = scenario.get('metadata', {})
+                    
+                    # Try to find project directory
+                    project_dir = None
+                    if 'project_path' in metadata:
+                        project_dir = Path(metadata['project_path'])
+                    elif scenario_id:
+                        # Try to infer from scenario_id - look for project in generated_dir
+                        generated_dir = Path(self.config.data.generated_dir)
+                        if generated_dir.exists():
+                            # Search for project directories
+                            for project_folder in generated_dir.iterdir():
+                                if project_folder.is_dir():
+                                    project_dir = project_folder
+                                    break
+                    
+                    # Load files if we found project directory
+                    if project_dir and project_dir.exists():
+                        for file_path in context_files_list:
+                            file_full_path = project_dir / file_path
+                            if file_full_path.exists():
+                                try:
+                                    with open(file_full_path, 'r', encoding='utf-8') as f:
+                                        context_files_content[file_path] = f.read()
+                                except Exception as e:
+                                    logger.warning(f"Failed to load context file {file_path}: {e}")
+                            else:
+                                logger.warning(f"Context file not found: {file_full_path}")
+                
+                if context_files_content:
+                    # Perform retrieval
+                    retrieved_context = retrieve_relevant(
+                        context_files_content,
+                        task_prompt_text,
+                        top_k=retrieval_config.top_k,
+                        method=retrieval_config.method,
+                        model_name=retrieval_config.model_name
+                    )
+                    
+                    if retrieved_context:
+                        logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
+                    else:
+                        logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
+                else:
+                    logger.warning(f"⚠️ Could not load context files for retrieval in scenario {scenario.get('id', 'unknown')}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error during retrieval for scenario {scenario.get('id', 'unknown')}: {e}", exc_info=True)
+                # Fallback: continue without retrieval
+        
+        # Build context section
+        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
+        if retrieved_context:
+            context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
+{retrieved_context}
+
+**FULL CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}
+"""
         
         # Create enhanced solution prompt (now language-aware)
         solution_prompt = f"""You are an expert {config['engineer']}. Your task is to provide a complete, working solution.
@@ -2203,7 +2285,7 @@ class LoCoBenchEvaluator:
 **REQUIREMENTS**: 
 {formatted_requirements}
 
-**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}
+{context_section}
 
 **CRITICAL INSTRUCTIONS**:
 1. You MUST respond with valid JSON in the exact format shown below

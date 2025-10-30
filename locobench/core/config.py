@@ -118,6 +118,29 @@ class Phase3Config:
 
 
 @dataclass
+class RetrievalConfig:
+    """Configuration for Retrieval-Augmented Generation (RAG)"""
+    
+    # Enable/disable retrieval mechanism
+    enabled: bool = False
+    
+    # Difficulty levels where retrieval should be applied
+    difficulties: List[str] = field(default_factory=lambda: ["hard", "expert"])
+    
+    # Number of top-K fragments to retrieve
+    top_k: int = 5
+    
+    # Retrieval method: 'embedding' or 'keyword'
+    method: str = "embedding"
+    
+    # Embedding model name (for embedding method)
+    model_name: str = "all-MiniLM-L6-v2"
+    
+    # Chunk size for code splitting (characters)
+    chunk_size: int = 512
+
+
+@dataclass
 class Phase4Config:
     """Configuration for Phase 4: Automated Validation & Evaluation"""
     
@@ -172,6 +195,7 @@ class Config:
     phase2: Phase2Config = field(default_factory=Phase2Config)
     phase3: Phase3Config = field(default_factory=Phase3Config)
     phase4: Phase4Config = field(default_factory=Phase4Config)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
 
     @classmethod 
     def from_yaml(cls, config_path: str = None) -> 'Config':
@@ -201,7 +225,8 @@ class Config:
             phase1=Phase1Config(**yaml_data.get('phase1', {})),
             phase2=Phase2Config(**yaml_data.get('phase2', {})),
             phase3=Phase3Config(**yaml_data.get('phase3', {})),
-            phase4=Phase4Config(**yaml_data.get('phase4', {}))
+            phase4=Phase4Config(**yaml_data.get('phase4', {})),
+            retrieval=RetrievalConfig(**yaml_data.get('retrieval', {}))
         )
     
     def create_directories(self):

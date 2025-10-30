@@ -42,4 +42,7 @@ asyncio-throttle>=1.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 black>=23.0.0
-flake8>=6.0.0 
+flake8>=6.0.0
+
+# Retrieval-Augmented Generation (RAG)
+sentence-transformers>=2.2.0 
