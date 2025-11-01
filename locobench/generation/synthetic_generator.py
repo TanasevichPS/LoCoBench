@@ -10,7 +10,8 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
@@ -93,50 +94,139 @@ class CriticalAuthError(Exception):
         super().__init__(f"🚨 CRITICAL AUTH FAILURE - {provider}: {message}")
 
 
-async def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 60.0, provider: str = "Unknown"):
-    """Enhanced retry logic with exponential backoff and critical error handling"""
+async def retry_with_backoff(
+    func,
+    max_retries: int = 5,
+    base_delay: float = 1.5,
+    max_delay: float = 90.0,
+    provider: str = "Unknown",
+):
+    """Enhanced retry logic with exponential backoff, jitter, and critical error handling"""
+
+    last_error: Optional[Exception] = None
+
+    auth_error_patterns = [
+        "auth",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "api key",
+        "authentication failed",
+        "credentials",
+        "access denied",
+        "token expired",
+        "expiredtokenexception",
+        "security token",
+        "session token",
+    ]
+
+    rate_limit_patterns = [
+        "rate limit",
+        "too many requests",
+        "throttling",
+        "throttlingexception",
+        "too many tokens",
+        "429",
+    ]
+
+    connection_patterns = [
+        "connection",
+        "timeout",
+        "network",
+        "502",
+        "503",
+        "504",
+        "internal error",
+        "server error",
+    ]
+
     for attempt in range(max_retries):
         try:
             return await func()
         except Exception as e:
+            last_error = e
             error_str = str(e).lower()
-            
+
             # Critical auth errors - stop immediately, don't retry
-            if any(pattern in error_str for pattern in [
-                "auth", "unauthorized", "forbidden", "invalid api key", "api key", 
-                "authentication failed", "credentials", "access denied", "token expired",
-                "expiredtokenexception", "security token", "session token"
-            ]):
+            if any(pattern in error_str for pattern in auth_error_patterns):
                 if "expired" in error_str or "expiredtoken" in error_str:
                     raise CriticalAuthError(provider, f"Authentication token expired: {str(e)}")
-                else:
-                    raise CriticalAuthError(provider, f"Authentication failed: {str(e)}")
-            
-            # Retryable errors
-            elif any(pattern in error_str for pattern in [
-                "rate limit", "too many requests", "connection", "timeout", 
-                "network", "502", "503", "504", "internal error", "server error",
-                "throttlingexception", "too many tokens"  # Claude API specific
-            ]):
+                raise CriticalAuthError(provider, f"Authentication failed: {str(e)}")
+
+            # Extract status code and headers when available
+            response = getattr(e, "response", None)
+            status_code = getattr(response, "status_code", None)
+            if status_code is None and hasattr(e, "status"):
+                status_code = getattr(e, "status", None)
+
+            headers = {}
+            if response is not None and getattr(response, "headers", None):
+                headers = dict(response.headers)
+            elif hasattr(e, "headers") and getattr(e, "headers", None):
+                headers = dict(e.headers)
+
+            retry_after_header = None
+            for header_name in ("retry-after", "Retry-After"):
+                if headers and header_name in headers:
+                    retry_after_header = headers[header_name]
+                    break
+
+            retry_after_seconds: Optional[float] = None
+            if retry_after_header:
+                try:
+                    retry_after_seconds = float(retry_after_header)
+                except (TypeError, ValueError):
+                    try:
+                        retry_after_dt = parsedate_to_datetime(retry_after_header)
+                        now_utc = datetime.now(timezone.utc)
+                        retry_after_seconds = max(0.0, (retry_after_dt - now_utc).total_seconds())
+                    except Exception:
+                        retry_after_seconds = None
+
+            is_rate_limit_error = (
+                (status_code == 429)
+                or any(pattern in error_str for pattern in rate_limit_patterns)
+            )
+            is_connection_error = any(pattern in error_str for pattern in connection_patterns)
+
+            if is_rate_limit_error or is_connection_error:
                 if attempt < max_retries - 1:
-                    # Use longer delay for throttling errors
-                    if "throttlingexception" in error_str or "too many tokens" in error_str:
-                        delay = min(base_delay * (3 ** attempt), max_delay * 2)  # Longer delay for throttling
+                    if is_rate_limit_error:
+                        # Start with exponential backoff but enforce a minimum wait that scales with attempts
+                        delay = base_delay * (2 ** attempt)
+                        delay = max(delay, 5.0 * (attempt + 1))
                     else:
-                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        delay = base_delay * (2 ** attempt)
+
+                    if retry_after_seconds is not None:
+                        delay = max(delay, retry_after_seconds)
+
+                    delay = min(delay, max_delay)
+                    # Add small jitter to avoid request thundering herd
+                    jitter_factor = 1.0 + random.uniform(0, 0.25)
+                    delay = max(0.0, min(delay * jitter_factor, max_delay))
+
+                    log_prefix = "Rate limit" if is_rate_limit_error else "Transient"
+                    logger.warning(
+                        "%s issue for %s (attempt %s/%s): %s. Retrying in %.1fs",
+                        log_prefix,
+                        provider,
+                        attempt + 1,
+                        max_retries,
+                        e,
+                        delay,
+                    )
                     await asyncio.sleep(delay)
                     continue
-                else:
-                    # Final attempt failed
-                    error_type = "RATE_LIMIT" if "rate limit" in error_str or "throttling" in error_str else "CONNECTION_ERROR"
-                    raise APIError(provider, error_type, f"Max retries exceeded: {str(e)}", should_retry=False)
-            
+
+                error_type = "RATE_LIMIT" if is_rate_limit_error else "CONNECTION_ERROR"
+                raise APIError(provider, error_type, f"Max retries exceeded: {str(e)}", should_retry=False)
+
             # Unknown errors - treat as non-retryable
-            else:
-                raise APIError(provider, "UNKNOWN_ERROR", f"Unexpected error: {str(e)}", should_retry=False)
-    
-    # Should never reach here
-    raise APIError(provider, "RETRY_EXHAUSTED", "All retry attempts failed", should_retry=False)
+            raise APIError(provider, "UNKNOWN_ERROR", f"Unexpected error: {str(e)}", should_retry=False)
+
+    # Should never reach here, but keep a defensive raise that includes the last error context
+    raise APIError(provider, "RETRY_EXHAUSTED", "All retry attempts failed", original_error=last_error, should_retry=False)
 
 
 class ProjectComplexity(Enum):
