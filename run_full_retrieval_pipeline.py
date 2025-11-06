@@ -77,7 +77,10 @@ async def run_full_retrieval_pipeline():
             task_prompt,
             top_k=config.retrieval.top_k,
             method=config.retrieval.method,
-            model_name=config.retrieval.model_name
+            model_name=config.retrieval.model_name,
+            chunk_size=config.retrieval.chunk_size,
+            chunk_overlap=config.retrieval.chunk_overlap,
+            min_similarity=config.retrieval.min_similarity
         )
         
         print(f"\n✅ Retrieval завершен")
@@ -106,7 +109,7 @@ async def run_full_retrieval_pipeline():
 **REQUIREMENTS**: 
 {task_prompt}
 
-**RETRIEVED CONTEXT** (most relevant code fragments):
+**RETRIEVED CONTEXT** (reference only, do not copy verbatim):
 {retrieved_context if retrieved_context else 'No relevant context retrieved'}
 
 **FULL CONTEXT FILES**: {', '.join(context_files_dict.keys())}
@@ -186,7 +189,10 @@ Generate your response now:"""
                 'embedding_model': config.retrieval.model_name,
                 'top_k': config.retrieval.top_k,
                 'retrieved_context_length': len(retrieved_context),
-                'retrieved_context_preview': retrieved_context[:500] if retrieved_context else None
+                'retrieved_context_preview': retrieved_context[:500] if retrieved_context else None,
+                'chunk_size': config.retrieval.chunk_size,
+                'chunk_overlap': config.retrieval.chunk_overlap,
+                'min_similarity': config.retrieval.min_similarity
             },
             'generation': {
                 'response_length': len(response),
