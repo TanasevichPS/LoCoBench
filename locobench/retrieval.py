@@ -21,13 +21,14 @@ except ImportError:
     logger.warning("sentence-transformers not available. Retrieval will fall back to keyword-based method.")
 
 
-def split_code(code: str, chunk_size: int = 512) -> List[str]:
+def split_code(code: str, chunk_size: int = 512, overlap: int = 0) -> List[str]:
     """
     Split code into chunks for embedding-based retrieval.
     
     Args:
         code: Source code content
         chunk_size: Maximum chunk size in characters
+        overlap: Number of overlapping characters between chunks
         
     Returns:
         List of code chunks
@@ -35,26 +36,25 @@ def split_code(code: str, chunk_size: int = 512) -> List[str]:
     if not code:
         return []
     
-    lines = code.split('\n')
+    if chunk_size <= 0:
+        return [code]
+
+    step = max(chunk_size - overlap, 1)
     chunks = []
-    current_chunk = []
-    current_size = 0
-    
-    for line in lines:
-        line_size = len(line) + 1  # +1 for newline
-        if current_size + line_size > chunk_size and current_chunk:
-            # Save current chunk
-            chunks.append('\n'.join(current_chunk))
-            current_chunk = [line]
-            current_size = line_size
-        else:
-            current_chunk.append(line)
-            current_size += line_size
-    
-    # Add remaining chunk
-    if current_chunk:
-        chunks.append('\n'.join(current_chunk))
-    
+    length = len(code)
+    start = 0
+
+    while start < length:
+        end = min(start + chunk_size, length)
+        chunk = code[start:end]
+
+        # Trim leading/trailing newlines for cleaner display
+        chunk = chunk.strip('\n')
+        if chunk:
+            chunks.append(chunk)
+
+        start += step
+
     return chunks
 
 
@@ -62,7 +62,10 @@ def retrieve_relevant_embedding(
     context_files: Dict[str, str],
     task_prompt: str,
     top_k: int = 5,
-    model_name: str = 'all-MiniLM-L6-v2'
+    model_name: str = 'all-MiniLM-L6-v2',
+    chunk_size: int = 512,
+    chunk_overlap: int = 0,
+    min_similarity: float = 0.0
 ) -> str:
     """
     Retrieve top-K relevant code fragments using embeddings.
@@ -94,7 +97,7 @@ def retrieve_relevant_embedding(
         chunk_info = []  # (file_path, chunk_index, chunk_content)
         
         for file_path, code_content in context_files.items():
-            file_chunks = split_code(code_content)
+            file_chunks = split_code(code_content, chunk_size=chunk_size, overlap=chunk_overlap)
             for idx, chunk in enumerate(file_chunks):
                 chunk_info.append((file_path, idx, chunk))
                 chunks.append(chunk)
@@ -127,8 +130,10 @@ def retrieve_relevant_embedding(
         # Handle potential NaN values
         similarities = np.nan_to_num(similarities, nan=0.0)
         
-        # Get top-K indices
-        top_indices = np.argsort(similarities)[-top_k:][::-1]  # Sort descending
+        # Get top-K indices with threshold filtering
+        ranked_indices = np.argsort(similarities)[::-1]  # Descending order
+        filtered_indices = [idx for idx in ranked_indices if similarities[idx] >= min_similarity]
+        top_indices = filtered_indices[:top_k]
         
         # Format retrieved fragments
         retrieved_parts = []
@@ -152,7 +157,9 @@ def retrieve_relevant_embedding(
 def retrieve_relevant_keyword(
     context_files: Dict[str, str],
     task_prompt: str,
-    top_k: int = 5
+    top_k: int = 5,
+    chunk_size: int = 512,
+    chunk_overlap: int = 0
 ) -> str:
     """
     Retrieve relevant code fragments using keyword matching (simple fallback).
@@ -192,7 +199,7 @@ def retrieve_relevant_keyword(
     chunk_info = []
     
     for file_path, code_content in context_files.items():
-        chunks = split_code(code_content)
+        chunks = split_code(code_content, chunk_size=chunk_size, overlap=chunk_overlap)
         for idx, chunk in enumerate(chunks):
             chunk_lower = chunk.lower()
             # Count keyword matches
@@ -225,7 +232,10 @@ def retrieve_relevant(
     task_prompt: str,
     top_k: int = 5,
     method: str = 'embedding',
-    model_name: str = 'all-MiniLM-L6-v2'
+    model_name: str = 'all-MiniLM-L6-v2',
+    chunk_size: int = 512,
+    chunk_overlap: int = 0,
+    min_similarity: float = 0.0
 ) -> str:
     """
     Main retrieval function that dispatches to appropriate method.
@@ -241,17 +251,43 @@ def retrieve_relevant(
         Formatted string with retrieved code fragments
     """
     if method == 'embedding':
-        result = retrieve_relevant_embedding(context_files, task_prompt, top_k, model_name)
+        result = retrieve_relevant_embedding(
+            context_files,
+            task_prompt,
+            top_k,
+            model_name,
+            chunk_size,
+            chunk_overlap,
+            min_similarity
+        )
         # Fallback to keyword if embedding fails
         if not result and context_files:
             logger.warning("Embedding retrieval failed, falling back to keyword method")
-            return retrieve_relevant_keyword(context_files, task_prompt, top_k)
+            return retrieve_relevant_keyword(
+                context_files,
+                task_prompt,
+                top_k,
+                chunk_size,
+                chunk_overlap
+            )
         return result
     elif method == 'keyword':
-        return retrieve_relevant_keyword(context_files, task_prompt, top_k)
+        return retrieve_relevant_keyword(
+            context_files,
+            task_prompt,
+            top_k,
+            chunk_size,
+            chunk_overlap
+        )
     else:
         logger.warning(f"Unknown retrieval method: {method}. Falling back to keyword.")
-        return retrieve_relevant_keyword(context_files, task_prompt, top_k)
+        return retrieve_relevant_keyword(
+            context_files,
+            task_prompt,
+            top_k,
+            chunk_size,
+            chunk_overlap
+        )
 
 
 def load_context_files_from_scenario(

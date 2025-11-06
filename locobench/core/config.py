@@ -128,7 +128,7 @@ class RetrievalConfig:
     difficulties: List[str] = field(default_factory=lambda: ["hard", "expert"])
     
     # Number of top-K fragments to retrieve
-    top_k: int = 5
+    top_k: int = 3
     
     # Retrieval method: 'embedding' or 'keyword'
     method: str = "embedding"
@@ -137,7 +137,13 @@ class RetrievalConfig:
     model_name: str = "all-MiniLM-L6-v2"
     
     # Chunk size for code splitting (characters)
-    chunk_size: int = 512
+    chunk_size: int = 1200
+
+    # Overlap between consecutive chunks (characters)
+    chunk_overlap: int = 200
+
+    # Minimum similarity threshold for retrieved chunks (0-1 range)
+    min_similarity: float = 0.3
 
 
 @dataclass

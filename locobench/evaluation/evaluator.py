@@ -2190,12 +2190,12 @@ class LoCoBenchEvaluator:
                 session_content = task_prompt[session_key]
                 session_requirements.append(f"**{session_key.upper()}**: {session_content}")
             formatted_requirements = '\n\n'.join(session_requirements)
-            # For retrieval, use first session content as query
-            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
+            # Use all session requirements as the retrieval query to capture full context
+            task_prompt_text = formatted_requirements
         else:
             # Regular scenario with string task_prompt
             formatted_requirements = str(task_prompt)
-            task_prompt_text = str(task_prompt)
+            task_prompt_text = formatted_requirements
         
         # Apply retrieval if enabled and scenario difficulty matches
         retrieved_context = ""
@@ -2252,11 +2252,15 @@ class LoCoBenchEvaluator:
                         task_prompt_text,
                         top_k=retrieval_config.top_k,
                         method=retrieval_config.method,
-                        model_name=retrieval_config.model_name
+                        model_name=retrieval_config.model_name,
+                        chunk_size=retrieval_config.chunk_size,
+                        chunk_overlap=retrieval_config.chunk_overlap,
+                        min_similarity=retrieval_config.min_similarity
                     )
                     
                     if retrieved_context:
                         logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
+                        logger.info(f"📏 Retrieved context length: {len(retrieved_context)} chars")
                     else:
                         logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
                 else:
@@ -2267,12 +2271,13 @@ class LoCoBenchEvaluator:
                 # Fallback: continue without retrieval
         
         # Build context section
-        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
+        context_files_display = ', '.join(scenario.get('context_files', []))
+        context_section = f"**CONTEXT FILES**: {context_files_display}"
         if retrieved_context:
-            context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
+            context_section = f"""**REFERENCE CONTEXT** (use for reasoning, do not copy verbatim):
 {retrieved_context}
 
-**FULL CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}
+**AVAILABLE CONTEXT FILES**: {context_files_display}
 """
         
         # Create enhanced solution prompt (now language-aware)

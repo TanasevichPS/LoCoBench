@@ -164,7 +164,7 @@ async def run_simple_retrieval_pipeline():
 **REQUIREMENTS**: 
 {task_prompt}
 
-**RETRIEVED CONTEXT** (most relevant code fragments):
+**RETRIEVED CONTEXT** (reference only, do not copy verbatim):
 {retrieved_context if retrieved_context else 'No relevant context retrieved'}
 
 **FULL CONTEXT FILES**: {', '.join(context_files.keys())}
