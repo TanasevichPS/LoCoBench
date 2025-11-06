@@ -117,11 +117,13 @@ phase4:
     system_thinking: 0.125
   task_timeout: 1800
 retrieval:
-  chunk_size: 512
+  chunk_size: 1200
+  chunk_overlap: 200
   difficulties:
   - hard
   - expert
   enabled: true
   method: embedding
   model_name: all-MiniLM-L6-v2
-  top_k: 5
+  top_k: 3
+  min_similarity: 0.3

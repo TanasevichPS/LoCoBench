@@ -733,18 +733,66 @@ class MultiLLMGenerator:
                     full_prompt = f"{system_prompt}\n\n{prompt}"
                 else:
                     full_prompt = prompt
-                
+
                 self.logger.info(f"🤖 Generating with Hugging Face model: {model_name}")
                 self.logger.info(f"📝 Prompt length: {len(full_prompt)} chars")
-                
+
+                def _normalize_length(value: int) -> Optional[int]:
+                    if value is None:
+                        return None
+                    if not isinstance(value, int):
+                        try:
+                            value = int(value)
+                        except (TypeError, ValueError):
+                            return None
+                    if value <= 0 or value > 1_000_000:
+                        return None
+                    return value
+
+                max_position_embeddings = _normalize_length(getattr(model.config, "max_position_embeddings", None))
+                tokenizer_max_length = _normalize_length(getattr(tokenizer, "model_max_length", None))
+
+                candidate_lengths = [length for length in [max_position_embeddings, tokenizer_max_length] if length]
+                max_prompt_length = min(candidate_lengths) if candidate_lengths else 4096
+                reserve_fraction = 0.3
+                calculated_reserve = int(max_prompt_length * reserve_fraction)
+                output_reserve = max(calculated_reserve, 128)
+                output_reserve = min(output_reserve, max_prompt_length // 2)
+                effective_prompt_limit = max_prompt_length - output_reserve
+                if effective_prompt_limit < 256:
+                    effective_prompt_limit = max(max_prompt_length - 128, max_prompt_length // 2, 64)
+                    output_reserve = max_prompt_length - effective_prompt_limit
+                effective_prompt_limit = min(effective_prompt_limit, max_prompt_length)
+                output_reserve = max(max_prompt_length - effective_prompt_limit, 0)
+
                 # Tokenize input
-                inputs = tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
-                
+                inputs = tokenizer(
+                    full_prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=effective_prompt_limit,
+                    padding=False
+                ).to(device)
+
+                input_token_count = inputs.input_ids.shape[-1]
+                total_limit = max_prompt_length
+                available_new_tokens = max(total_limit - input_token_count, 0)
+                if available_new_tokens <= 0:
+                    fallback_new_tokens = max(max_prompt_length // 2, 16)
+                    max_new_tokens = min(fallback_new_tokens, 4096)
+                else:
+                    max_new_tokens = min(available_new_tokens, 4096)
+                max_new_tokens = max(16, max_new_tokens)
+
+                self.logger.info(
+                    f"🔢 Tokens | prompt: {input_token_count}, reserve: {output_reserve}, max_new: {max_new_tokens}, limit: {total_limit}"
+                )
+
                 # Generate
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=2048,
+                        max_new_tokens=max_new_tokens,
                         temperature=0.7,
                         do_sample=True,
                         top_p=0.9,
@@ -762,7 +810,12 @@ class MultiLLMGenerator:
                     # If prompt is not found, return the end part (likely the generated content)
                     response = generated_text[len(full_prompt):].strip()
                 
+                output_token_count = outputs[0].shape[-1]
+                generated_token_count = max(output_token_count - input_token_count, 0)
                 self.logger.info(f"📤 Hugging Face response length: {len(response)} chars")
+                self.logger.info(
+                    f"🧮 Tokens | generated: {generated_token_count}, total: {output_token_count}"
+                )
                 
                 if not response or len(response.strip()) < 10:
                     raise APIError("HuggingFace", "EMPTY_RESPONSE", f"Model {model_name} returned empty or very short response")
