@@ -8,8 +8,8 @@ api:
   custom_model_api_key: null
   custom_model_temperature: 0.1
   custom_model_max_tokens: 32000
-  custom_model_timeout: 30
-  custom_model_client_timeout: 45
+  custom_model_timeout: 600
+  custom_model_client_timeout: 660
   disable_proxy: false
   max_concurrent_requests: 300
   max_requests_per_minute: 600

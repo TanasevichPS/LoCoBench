@@ -25,8 +25,8 @@ class APIConfig:
     custom_model_api_key: Optional[str] = None
     custom_model_temperature: float = 0.1
     custom_model_max_tokens: int = 32000
-    custom_model_timeout: float = 30.0
-    custom_model_client_timeout: float = 45.0
+    custom_model_timeout: float = 600.0
+    custom_model_client_timeout: float = 660.0
     disable_proxy: bool = False
     
     # Rate limiting settings 
