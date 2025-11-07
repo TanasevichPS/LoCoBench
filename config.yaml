@@ -116,12 +116,15 @@ phase4:
     solution_elegance: 0.125
     system_thinking: 0.125
   task_timeout: 1800
-retrieval:
-  chunk_size: 512
-  difficulties:
-  - hard
-  - expert
-  enabled: true
-  method: embedding
-  model_name: all-MiniLM-L6-v2
-  top_k: 5
+  retrieval:
+    chunk_size: 512
+    difficulties:
+      - hard
+      - expert
+    enabled: true
+    top_percent: 0.05
+    max_context_tokens: 4096
+    method: embedding
+    model_name: all-MiniLM-L6-v2
+    local_model_path: null
+    top_k: 5

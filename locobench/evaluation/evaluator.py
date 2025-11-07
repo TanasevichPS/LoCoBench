@@ -27,7 +27,6 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
-from ..utils.token_counter import count_tokens
 from ..retrieval import retrieve_relevant, load_context_files_from_scenario
 
 logger = logging.getLogger(__name__)
@@ -2199,315 +2198,134 @@ class LoCoBenchEvaluator:
             formatted_requirements = str(task_prompt)
             task_prompt_text = str(task_prompt)
         
+
+
         # Apply retrieval if enabled and scenario difficulty matches
         retrieved_context = ""
         difficulty = scenario.get('difficulty', '').lower()
         retrieval_config = self.config.retrieval
-        
+
+        def _resolve_project_dir_for_scenario() -> Optional[Path]:
+            metadata = scenario.get('metadata') or {}
+            project_path = metadata.get('project_path')
+            if project_path:
+                candidate = Path(project_path)
+                if candidate.exists():
+                    return candidate
+                candidate = Path(self.config.data.generated_dir) / project_path
+                if candidate.exists():
+                    return candidate
+
+            scenario_id = scenario.get('id', '')
+            generated_dir = Path(self.config.data.generated_dir)
+            if not scenario_id or not generated_dir.exists():
+                if not generated_dir.exists():
+                    logger.warning("⚠️ Generated directory does not exist: %s", generated_dir)
+                return None
+
+            task_categories = [tc.value for tc in TaskCategory]
+            base_id = None
+            for task_cat in task_categories:
+                marker = f"_{task_cat}_"
+                if marker in scenario_id:
+                    base_id = scenario_id.split(marker)[0]
+                    break
+
+            if base_id is None:
+                difficulties = [level.value for level in DifficultyLevel]
+                for diff in difficulties:
+                    marker = f"_{diff}_"
+                    if marker in scenario_id:
+                        base_id = scenario_id.split(marker)[0]
+                        break
+
+            if base_id is None:
+                parts = scenario_id.split('_')
+                if len(parts) >= 3:
+                    base_id = '_'.join(parts[:4])
+                else:
+                    base_id = scenario_id
+
+            base_dir = generated_dir / base_id
+            if base_dir.exists() and base_dir.is_dir():
+                subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
+                if len(subdirs) == 1:
+                    return subdirs[0]
+                if subdirs:
+                    return subdirs[0]
+                return base_dir
+
+            for folder in generated_dir.iterdir():
+                if not folder.is_dir():
+                    continue
+                if (
+                    folder.name == base_id
+                    or folder.name.startswith(base_id + '_')
+                    or base_id.startswith(folder.name + '_')
+                ):
+                    return folder
+
+            return None
+
+        project_dir: Optional[Path] = None
+
         if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
             try:
-                logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
-                
-                # Try to load context files content
-                context_files_content = {}
-                context_files_list = scenario.get('context_files', [])
-                
-                if isinstance(context_files_list, dict):
-                    # Already a dict with contents
-                    context_files_content = context_files_list
-                elif isinstance(context_files_list, list):
-                    # Try to load from generated_dir based on scenario metadata
-                    scenario_id = scenario.get('id', '')
-                    metadata = scenario.get('metadata', {})
-                    
-                    # Try to find project directory
-                    project_dir = None
-                    if 'project_path' in metadata:
-                        project_dir = Path(metadata['project_path'])
-                    elif scenario_id:
-                        # Try to infer from scenario_id - look for project in generated_dir
-                        generated_dir = Path(self.config.data.generated_dir)
-                        if not generated_dir.exists():
-                            logger.warning(f"⚠️ Generated directory does not exist: {generated_dir}")
-                            logger.warning(f"⚠️ Cannot load context files for scenario {scenario_id}. Please ensure the generated directory exists and contains project folders.")
-                        elif generated_dir.exists():
-                            # Extract base project identifier from scenario_id
-                            # Scenario ID format: {base_id}_{task_category}_{difficulty}_{num}
-                            # Example: "test_python_easy_001_feature_implementation_easy_01"
-                            # Base ID: "test_python_easy_001" (everything before _{task_category})
-                            
-                            # All possible task categories (from TaskCategory enum)
-                            task_categories = [tc.value for tc in TaskCategory]
-                            
-                            # Find the first task category occurrence in scenario_id
-                            base_id = None
-                            for task_cat in task_categories:
-                                pattern = f"_{task_cat}_"
-                                if pattern in scenario_id:
-                                    base_id = scenario_id.split(pattern)[0]
-                                    logger.debug(f"📋 Extracted base_id '{base_id}' from scenario_id '{scenario_id}' (matched task_category: {task_cat})")
-                                    break
-                            
-                            # If no task_category found, try to extract by difficulty patterns
-                            if base_id is None:
-                                # Try to find difficulty patterns: _easy_, _medium_, _hard_, _expert_
-                                difficulties = [d.value for d in DifficultyLevel]
-                                for diff in difficulties:
-                                    # Look for pattern like: ..._easy_01 or ..._easy_001
-                                    pattern = f"_{diff}_"
-                                    if pattern in scenario_id:
-                                        # Take everything before the difficulty (but after potential task_category)
-                                        parts = scenario_id.split(pattern)
-                                        if len(parts) > 1:
-                                            # Check if there's a task_category before difficulty
-                                            candidate_base = parts[0]
-                                            # Verify it doesn't contain another task_category
-                                            has_task_cat = any(f"_{tc}_" in candidate_base for tc in task_categories)
-                                            if not has_task_cat:
-                                                base_id = candidate_base
-                                                logger.debug(f"📋 Extracted base_id '{base_id}' from scenario_id '{scenario_id}' (matched difficulty: {diff})")
-                                                break
-                            
-                            # Fallback: if still no match, try first few parts
-                            if base_id is None:
-                                scenario_parts = scenario_id.split('_')
-                                if len(scenario_parts) >= 3:
-                                    # Try first 3-4 parts as base_id
-                                    base_id = '_'.join(scenario_parts[:4])
-                                    logger.debug(f"📋 Using fallback base_id '{base_id}' from scenario_id '{scenario_id}'")
-                                else:
-                                    base_id = scenario_id
-                            
-                            # Now look for project directory: data/generated/{base_id}/{project_name}/
-                            base_project_dir = generated_dir / base_id
-                            
-                            if base_project_dir.exists() and base_project_dir.is_dir():
-                                # Look for project subdirectories inside base_id folder
-                                project_subdirs = [d for d in base_project_dir.iterdir() if d.is_dir()]
-                                
-                                if len(project_subdirs) == 1:
-                                    # Single project subdirectory - use it
-                                    project_dir = project_subdirs[0]
-                                    logger.info(f"✅ Found project directory: {project_dir} (single project in {base_id})")
-                                elif len(project_subdirs) > 1:
-                                    # Multiple project subdirectories - try to match by name or use first
-                                    # Try to find one that matches scenario context
-                                    project_dir = project_subdirs[0]
-                                    logger.info(f"✅ Found project directory: {project_dir} (using first of {len(project_subdirs)} projects in {base_id})")
-                                    logger.debug(f"Available project subdirectories: {[d.name for d in project_subdirs]}")
-                                else:
-                                    # No subdirectories - maybe project files are directly in base_id folder
-                                    project_dir = base_project_dir
-                                    logger.info(f"✅ Using base project directory directly: {project_dir}")
-                            else:
-                                # Fallback: try to find base_id as direct folder in generated_dir
-                                potential_dirs = []
-                                for folder in generated_dir.iterdir():
-                                    if folder.is_dir():
-                                        folder_name = folder.name
-                                        # Check if folder name matches base_id or starts with it
-                                        if folder_name == base_id or folder_name.startswith(base_id + '_'):
-                                            potential_dirs.append(folder)
-                                        # Also check if base_id starts with folder name
-                                        elif base_id.startswith(folder_name + '_'):
-                                            potential_dirs.append(folder)
-                                
-                                if potential_dirs:
-                                    project_dir = potential_dirs[0]
-                                    logger.info(f"✅ Found project directory by fallback match: {project_dir} (matched base_id: {base_id})")
-                                else:
-                                    logger.warning(f"⚠️ Could not find project directory for base_id '{base_id}' (from scenario_id '{scenario_id}')")
-                                    logger.debug(f"Expected path: {base_project_dir}")
-                                    logger.debug(f"Available directories in {generated_dir}: {[d.name for d in generated_dir.iterdir() if d.is_dir()]}")
-                    
-                    # Load files if we found project directory
-                    if project_dir and project_dir.exists():
-                        loaded_count = 0
-                        failed_count = 0
-                        project_dir_name = project_dir.name
-                        
-                        for file_path in context_files_list:
-                            # Clean up file path (remove leading/trailing whitespace)
-                            file_path = file_path.strip() if isinstance(file_path, str) else str(file_path).strip()
-                            if not file_path:
-                                continue
-                            
-                            # Normalize file path: remove project_dir name and leading slashes
-                            # This handles cases where paths might include the project subdirectory name
-                            normalized_path = file_path
-                            
-                            # Remove leading slash if present (to avoid absolute paths)
-                            normalized_path = normalized_path.lstrip('/').lstrip('\\')
-                            
-                            # If path contains project_dir_name, extract relative path after the last occurrence
-                            # This handles cases like:
-                            # - scholarport-gateway/src/... -> src/...
-                            # - data/generated/.../scholarport-gateway/scholarport-gateway/src/... -> src/...
-                            # Important: Only remove if it's followed by '/' or '\' to avoid partial matches
-                            if project_dir_name in normalized_path:
-                                # Find the last occurrence of project_dir_name followed by a path separator
-                                search_pattern = project_dir_name + '/'
-                                idx = normalized_path.rfind(search_pattern)
-                                if idx == -1:
-                                    # Try with backslash
-                                    search_pattern = project_dir_name + '\\'
-                                    idx = normalized_path.rfind(search_pattern)
-                                
-                                if idx != -1:
-                                    # Take everything after project_dir_name + separator
-                                    after_project = normalized_path[idx + len(search_pattern):]
-                                    if after_project:
-                                        normalized_path = after_project
-                                else:
-                                    # Check if path ends with project_dir_name (shouldn't happen, but handle it)
-                                    if normalized_path.endswith(project_dir_name):
-                                        normalized_path = ''
-                            
-                            # Try multiple path combinations to handle different path formats
-                            path_attempts = []
-                            # Always try normalized path first (without project_dir name and leading slashes)
-                            if normalized_path and normalized_path != file_path:
-                                path_attempts.append(normalized_path)
-                            # Try original path (but remove leading slash if present)
-                            original_normalized = file_path.lstrip('/').lstrip('\\')
-                            if original_normalized and original_normalized not in path_attempts:
-                                path_attempts.append(original_normalized)
-                            # Also try original path as-is if it's different
-                            if file_path not in path_attempts:
-                                path_attempts.append(file_path)
-                            
-                            # If normalized_path still looks like a full path (contains multiple slashes),
-                            # try to extract last few path components as fallback (but not just filename to avoid false matches)
-                            if '/' in normalized_path and normalized_path.count('/') > 2:
-                                path_parts = normalized_path.split('/')
-                                # Try using last 2-3 components (more specific than just filename)
-                                if len(path_parts) >= 2:
-                                    last_two = '/'.join(path_parts[-2:])
-                                    if last_two not in path_attempts:
-                                        path_attempts.append(last_two)
-                                if len(path_parts) >= 3:
-                                    last_three = '/'.join(path_parts[-3:])
-                                    if last_three not in path_attempts:
-                                        path_attempts.append(last_three)
-                            
-                            file_loaded = False
-                            for path_attempt in path_attempts:
-                                file_full_path = project_dir / path_attempt
-                                if file_full_path.exists():
-                                    try:
-                                        with open(file_full_path, 'r', encoding='utf-8') as f:
-                                            context_files_content[file_path] = f.read()
-                                        loaded_count += 1
-                                        file_loaded = True
-                                        break
-                                    except Exception as e:
-                                        logger.warning(f"Failed to load context file {file_path} (attempted path: {path_attempt}): {e}")
-                            
-                            # If file not found and original path contains a subdirectory name,
-                            # try to find the subdirectory within project_dir
-                            if not file_loaded and project_dir.exists():
-                                # Check if the original file_path starts with a directory name
-                                path_parts = file_path.split('/', 1) if '/' in file_path else file_path.split('\\', 1)
-                                if len(path_parts) > 1:
-                                    potential_subdir_name = path_parts[0]
-                                    # Try exact match first
-                                    potential_subdir = project_dir / potential_subdir_name
-                                    if potential_subdir.exists() and potential_subdir.is_dir():
-                                        # Try path relative to subdirectory
-                                        subdir_path = path_parts[1]
-                                        file_full_path = potential_subdir / subdir_path
-                                        if file_full_path.exists():
-                                            try:
-                                                with open(file_full_path, 'r', encoding='utf-8') as f:
-                                                    context_files_content[file_path] = f.read()
-                                                loaded_count += 1
-                                                file_loaded = True
-                                            except Exception as e:
-                                                logger.warning(f"Failed to load context file {file_path} (attempted subdirectory path: {file_full_path}): {e}")
-                                    
-                                    # If not found, try to find subdirectory that starts with potential_subdir_name
-                                    if not file_loaded:
-                                        for subdir in project_dir.iterdir():
-                                            if subdir.is_dir() and subdir.name.startswith(potential_subdir_name):
-                                                subdir_path = path_parts[1] if len(path_parts) > 1 else ''
-                                                if subdir_path:
-                                                    file_full_path = subdir / subdir_path
-                                                    if file_full_path.exists():
-                                                        try:
-                                                            with open(file_full_path, 'r', encoding='utf-8') as f:
-                                                                context_files_content[file_path] = f.read()
-                                                            loaded_count += 1
-                                                            file_loaded = True
-                                                            break
-                                                        except Exception as e:
-                                                            logger.warning(f"Failed to load context file {file_path} (attempted subdirectory path: {file_full_path}): {e}")
-                                
-                                # Also try searching recursively if file still not found (as last resort)
-                                # Only do this for files with unique names to avoid false matches
-                                if not file_loaded:
-                                    file_name = Path(file_path).name
-                                    # Only search recursively if filename is reasonably unique (contains path info)
-                                    # Skip if it's just a generic name like "utils.java" or "config.java"
-                                    if file_name and len(file_name) > 10:  # Reasonable uniqueness check
-                                        matches_found = 0
-                                        found_path = None
-                                        for root, dirs, files in os.walk(project_dir):
-                                            if file_name in files:
-                                                matches_found += 1
-                                                if matches_found == 1:
-                                                    found_path = Path(root) / file_name
-                                                elif matches_found > 1:
-                                                    # Multiple matches - skip recursive search to avoid ambiguity
-                                                    found_path = None
-                                                    break
-                                        
-                                        if found_path and matches_found == 1:
-                                            try:
-                                                with open(found_path, 'r', encoding='utf-8') as f:
-                                                    context_files_content[file_path] = f.read()
-                                                loaded_count += 1
-                                                file_loaded = True
-                                                logger.debug(f"Found file {file_name} at {found_path} via recursive search")
-                                            except Exception as e:
-                                                logger.warning(f"Failed to load file {file_name} from {found_path}: {e}")
-                            
-                            if not file_loaded:
-                                # Log all attempted paths for debugging
-                                attempted_paths = [str(project_dir / p) for p in path_attempts]
-                                logger.warning(f"Context file not found. Attempted paths: {attempted_paths}")
-                                failed_count += 1
-                        
-                        logger.info(f"📁 Loaded {loaded_count}/{len(context_files_list)} context files from {project_dir}")
-                        if failed_count > 0:
-                            logger.warning(f"⚠️ Failed to load {failed_count} context files")
-                    else:
-                        if not project_dir:
-                            logger.warning(f"⚠️ Project directory not found for scenario {scenario_id}")
-                        elif not project_dir.exists():
-                            logger.warning(f"⚠️ Project directory does not exist: {project_dir}")
-                
-                if context_files_content:
-                    # Perform retrieval
-                    retrieved_context = retrieve_relevant(
-                        context_files_content,
-                        task_prompt_text,
-                        top_k=retrieval_config.top_k,
-                        method=retrieval_config.method,
-                        model_name=retrieval_config.model_name
-                    )
-                    
-                    if retrieved_context:
-                        logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
-                    else:
-                        logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
+                logger.info("🔍 Applying retrieval for %s scenario: %s", difficulty, scenario.get('id', 'unknown'))
+
+                project_dir = _resolve_project_dir_for_scenario()
+                if project_dir:
+                    logger.info("📁 Using project directory for retrieval: %s", project_dir)
                 else:
-                    logger.warning(f"⚠️ Could not load context files for retrieval in scenario {scenario.get('id', 'unknown')}")
-                    logger.warning(f"⚠️ Retrieval is enabled but no context files were loaded. Model will work without retrieval context, which may lead to poor results or timeouts.")
-                    
-            except Exception as e:
-                logger.error(f"❌ Error during retrieval for scenario {scenario.get('id', 'unknown')}: {e}", exc_info=True)
-                # Fallback: continue without retrieval
-        
+                    logger.warning("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
+
+                context_obj = scenario.get('context_files')
+                if isinstance(context_obj, dict):
+                    context_files_content = {
+                        path: content for path, content in context_obj.items() if isinstance(content, str)
+                    }
+                elif isinstance(context_obj, list) and project_dir:
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=False,
+                    )
+                else:
+                    context_files_content = {}
+
+                retrieved_context = retrieve_relevant(
+                    context_files_content,
+                    task_prompt_text,
+                    top_k=retrieval_config.top_k,
+                    method=retrieval_config.method,
+                    model_name=retrieval_config.model_name,
+                    project_dir=project_dir,
+                    top_percent=retrieval_config.top_percent,
+                    max_context_tokens=retrieval_config.max_context_tokens,
+                    local_model_path=retrieval_config.local_model_path,
+                    chunk_size=retrieval_config.chunk_size,
+                )
+
+                if retrieved_context:
+                    logger.info(
+                        "✅ Retrieval produced context of %d characters for scenario %s",
+                        len(retrieved_context),
+                        scenario.get('id', 'unknown'),
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ Retrieval returned empty result for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+            except Exception as exc:
+                logger.error(
+                    "❌ Error during retrieval for scenario %s: %s",
+                    scenario.get('id', 'unknown'),
+                    exc,
+                    exc_info=True,
+                )
+                retrieved_context = ""
+
         # Build context section
         context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
         if retrieved_context:
@@ -2687,9 +2505,7 @@ Generate your response now:"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Count tokens before making the call
-                prompt_tokens = count_tokens(solution_prompt, model_name=model_name, provider=model_key)
-                logger.info(f"📊 Prompt tokens: {prompt_tokens:,} (chars: {len(solution_prompt):,})")
+                logger.info("📊 Prompt length: %d chars", len(solution_prompt))
                 
                 # For evaluation, use the specific model name instead of default config
                 if model_key == 'openai':

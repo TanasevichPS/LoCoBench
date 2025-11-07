@@ -141,6 +141,9 @@ class RetrievalConfig:
     # Number of top-K fragments to retrieve
     top_k: int = 5
     
+    # Fraction of project files to include (e.g. 0.05 = top 5%)
+    top_percent: float = 0.05
+    
     # Retrieval method: 'embedding' or 'keyword'
     method: str = "embedding"
     
@@ -149,6 +152,12 @@ class RetrievalConfig:
     
     # Chunk size for code splitting (characters)
     chunk_size: int = 512
+
+    # Upper bound on the retrieval context length (in characters)
+    max_context_tokens: int = 4096
+
+    # Optional local path to embedding model (SentenceTransformer) to avoid downloads
+    local_model_path: Optional[str] = None
 
 
 @dataclass
