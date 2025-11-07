@@ -297,15 +297,92 @@ def load_context_files_from_scenario(
         
         # Load files from project directory
         for file_path in context_files_list:
-            file_full_path = project_dir / file_path
-            if file_full_path.exists():
-                try:
-                    with open(file_full_path, 'r', encoding='utf-8') as f:
-                        context_files_dict[file_path] = f.read()
-                except Exception as e:
-                    logger.warning(f"Failed to load file {file_path}: {e}")
-            else:
-                logger.warning(f"Context file not found: {file_full_path}")
+            # Clean up file path
+            file_path = file_path.strip() if isinstance(file_path, str) else str(file_path).strip()
+            if not file_path:
+                continue
+            
+            # Normalize file path: remove project_dir name and leading slashes
+            # This handles cases where paths might include the project subdirectory name
+            project_dir_name = project_dir.name if project_dir else None
+            normalized_path = file_path
+            
+            # Remove leading slash if present (to avoid absolute paths)
+            normalized_path = normalized_path.lstrip('/').lstrip('\\')
+            
+            # If path contains project_dir_name, extract relative path after the last occurrence
+            # This handles cases like:
+            # - scholarport-gateway/src/... -> src/...
+            # - data/generated/.../scholarport-gateway/scholarport-gateway/src/... -> src/...
+            # Important: Only remove if it's followed by '/' or '\' to avoid partial matches
+            if project_dir_name and project_dir_name in normalized_path:
+                # Find the last occurrence of project_dir_name followed by a path separator
+                search_pattern = project_dir_name + '/'
+                idx = normalized_path.rfind(search_pattern)
+                if idx == -1:
+                    # Try with backslash
+                    search_pattern = project_dir_name + '\\'
+                    idx = normalized_path.rfind(search_pattern)
+                
+                if idx != -1:
+                    # Take everything after project_dir_name + separator
+                    after_project = normalized_path[idx + len(search_pattern):]
+                    if after_project:
+                        normalized_path = after_project
+                else:
+                    # Check if path ends with project_dir_name (shouldn't happen, but handle it)
+                    if normalized_path.endswith(project_dir_name):
+                        normalized_path = ''
+            
+            # Try multiple path combinations to handle different path formats
+            path_attempts = []
+            # Always try normalized path first (without project_dir name and leading slashes)
+            if normalized_path and normalized_path != file_path:
+                path_attempts.append(normalized_path)
+            # Try original path (but remove leading slash if present)
+            original_normalized = file_path.lstrip('/').lstrip('\\')
+            if original_normalized and original_normalized not in path_attempts:
+                path_attempts.append(original_normalized)
+            # Also try original path as-is if it's different
+            if file_path not in path_attempts:
+                path_attempts.append(file_path)
+            
+            file_loaded = False
+            for path_attempt in path_attempts:
+                file_full_path = project_dir / path_attempt
+                if file_full_path.exists():
+                    try:
+                        with open(file_full_path, 'r', encoding='utf-8') as f:
+                            context_files_dict[file_path] = f.read()
+                        file_loaded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to load file {file_path} (attempted path: {path_attempt}): {e}")
+            
+            # If file not found and original path contains a subdirectory name,
+            # try to find the subdirectory within project_dir
+            if not file_loaded and project_dir and project_dir.exists():
+                # Check if the original file_path starts with a directory name
+                path_parts = file_path.split('/', 1) if '/' in file_path else file_path.split('\\', 1)
+                if len(path_parts) > 1:
+                    potential_subdir_name = path_parts[0]
+                    potential_subdir = project_dir / potential_subdir_name
+                    if potential_subdir.exists() and potential_subdir.is_dir():
+                        # Try path relative to subdirectory
+                        subdir_path = path_parts[1]
+                        file_full_path = potential_subdir / subdir_path
+                        if file_full_path.exists():
+                            try:
+                                with open(file_full_path, 'r', encoding='utf-8') as f:
+                                    context_files_dict[file_path] = f.read()
+                                file_loaded = True
+                            except Exception as e:
+                                logger.warning(f"Failed to load file {file_path} (attempted subdirectory path: {file_full_path}): {e}")
+            
+            if not file_loaded:
+                # Log all attempted paths for debugging
+                attempted_paths = [str(project_dir / p) for p in path_attempts]
+                logger.warning(f"Context file not found. Attempted paths: {attempted_paths}")
         
         return context_files_dict
     
