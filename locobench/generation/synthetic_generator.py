@@ -26,6 +26,7 @@ from rich.progress import Progress, TaskID
 from ..core.config import Config
 from ..core.task import TaskCategory, DifficultyLevel
 from ..utils.rate_limiter import APIRateLimitManager
+from ..utils.token_counter import count_tokens
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -367,7 +368,12 @@ class MultiLLMGenerator:
                 raise APIError("OpenAI", "AUTH_FAILED", "OpenAI API key not configured")
             
             self.logger.info(f"🤖 Making OpenAI call, model: {self.config.api.default_model_openai}")
-            self.logger.info(f"📝 Prompt length: {len(prompt)} chars, System prompt: {len(system_prompt) if system_prompt else 0} chars")
+            # Count tokens
+            prompt_tokens = count_tokens(prompt, model_name=self.config.api.default_model_openai, provider="openai")
+            system_tokens = count_tokens(system_prompt, model_name=self.config.api.default_model_openai, provider="openai") if system_prompt else 0
+            total_tokens = prompt_tokens + system_tokens
+            self.logger.info(f"📝 Prompt length: {len(prompt)} chars ({prompt_tokens:,} tokens), System prompt: {len(system_prompt) if system_prompt else 0} chars ({system_tokens:,} tokens)")
+            self.logger.info(f"📊 Total input tokens: {total_tokens:,}")
             
             # Apply rate limiting
             async with await self.rate_limiter.acquire("openai"):
@@ -518,6 +524,14 @@ class MultiLLMGenerator:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        # Count tokens
+        prompt_tokens = count_tokens(prompt, model_name=target_model, provider="custom")
+        system_tokens = count_tokens(system_prompt, model_name=target_model, provider="custom") if system_prompt else 0
+        total_tokens = prompt_tokens + system_tokens
+        self.logger.info(f"🤖 Making Custom model call, model: {target_model}")
+        self.logger.info(f"📝 Prompt length: {len(prompt)} chars ({prompt_tokens:,} tokens), System prompt: {len(system_prompt) if system_prompt else 0} chars ({system_tokens:,} tokens)")
+        self.logger.info(f"📊 Total input tokens: {total_tokens:,}")
+
         async def _make_custom_call():
             async with await self.rate_limiter.acquire("custom"):
                 response = await self.custom_openai_client.chat.completions.create(
@@ -551,6 +565,14 @@ class MultiLLMGenerator:
         async def _make_google_call():
             if not self.config.api.google_api_key:
                 raise APIError("Gemini 2.5 Pro", "AUTH_FAILED", "Google API key not configured")
+            
+            # Count tokens
+            prompt_tokens = count_tokens(prompt, provider="google")
+            system_tokens = count_tokens(system_prompt, provider="google") if system_prompt else 0
+            total_tokens = prompt_tokens + system_tokens
+            self.logger.info(f"🤖 Making Google/Gemini call, model: {self.config.api.default_model_google}")
+            self.logger.info(f"📝 Prompt length: {len(prompt)} chars ({prompt_tokens:,} tokens), System prompt: {len(system_prompt) if system_prompt else 0} chars ({system_tokens:,} tokens)")
+            self.logger.info(f"📊 Total input tokens: {total_tokens:,}")
             
             # Apply rate limiting
             async with await self.rate_limiter.acquire("google"):
@@ -594,6 +616,14 @@ class MultiLLMGenerator:
             """Direct Claude API call using Bearer token authentication"""
             if not self.config.api.claude_bearer_token:
                 raise APIError("Claude", "AUTH_FAILED", "Claude Bearer Token not configured")
+            
+            # Count tokens
+            prompt_tokens = count_tokens(prompt, model_name=model_name, provider="claude")
+            system_tokens = count_tokens(system_prompt, model_name=model_name, provider="claude") if system_prompt else 0
+            total_tokens = prompt_tokens + system_tokens
+            self.logger.info(f"🤖 Making Claude call, model: {model_name}")
+            self.logger.info(f"📝 Prompt length: {len(prompt)} chars ({prompt_tokens:,} tokens), System prompt: {len(system_prompt) if system_prompt else 0} chars ({system_tokens:,} tokens)")
+            self.logger.info(f"📊 Total input tokens: {total_tokens:,}")
             
             # Import here to avoid dependency issues
             import json

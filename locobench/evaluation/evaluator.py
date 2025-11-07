@@ -26,6 +26,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
+from ..utils.token_counter import count_tokens
 from ..retrieval import retrieve_relevant, load_context_files_from_scenario
 
 logger = logging.getLogger(__name__)
@@ -2230,62 +2231,93 @@ class LoCoBenchEvaluator:
                             logger.warning(f"⚠️ Cannot load context files for scenario {scenario_id}. Please ensure the generated directory exists and contains project folders.")
                         elif generated_dir.exists():
                             # Extract base project identifier from scenario_id
-                            # Scenario IDs can be like: "php_web_cms_hard_038" or 
-                            # "c_desktop_productivity_medium_019_integration_testing_expert_01"
-                            # We need to find the matching project directory
-                            scenario_parts = scenario_id.split('_')
+                            # Scenario ID format: {base_id}_{task_category}_{difficulty}_{num}
+                            # Example: "test_python_easy_001_feature_implementation_easy_01"
+                            # Base ID: "test_python_easy_001" (everything before _{task_category})
                             
-                            # Extract base identifier - typically language_category_difficulty_number
-                            # Try different base lengths: full, without last part, without last 2 parts, etc.
-                            base_candidates = []
-                            if len(scenario_parts) >= 4:
-                                # Try: language_category_difficulty_number (e.g., "php_web_cms_hard_038")
-                                base_candidates.append('_'.join(scenario_parts[:5]))  # First 5 parts
-                                base_candidates.append('_'.join(scenario_parts[:4]))  # First 4 parts
-                            if len(scenario_parts) >= 3:
-                                base_candidates.append('_'.join(scenario_parts[:3]))  # First 3 parts
-                            base_candidates.append(scenario_id)  # Full match
+                            # All possible task categories (from TaskCategory enum)
+                            task_categories = [tc.value for tc in TaskCategory]
                             
-                            # Try multiple matching strategies:
-                            # 1. Exact match
-                            # 2. Match by base identifier (first few parts)
-                            # 3. Match by language + category pattern
+                            # Find the first task category occurrence in scenario_id
+                            base_id = None
+                            for task_cat in task_categories:
+                                pattern = f"_{task_cat}_"
+                                if pattern in scenario_id:
+                                    base_id = scenario_id.split(pattern)[0]
+                                    logger.debug(f"📋 Extracted base_id '{base_id}' from scenario_id '{scenario_id}' (matched task_category: {task_cat})")
+                                    break
                             
-                            potential_dirs = []
-                            for project_folder in generated_dir.iterdir():
-                                if project_folder.is_dir():
-                                    folder_name = project_folder.name
-                                    # Exact match
-                                    if folder_name == scenario_id:
-                                        project_dir = project_folder
-                                        logger.info(f"✅ Found exact project directory match: {project_dir}")
-                                        break
-                                    # Check if folder name matches any base candidate
-                                    for base_candidate in base_candidates:
-                                        if folder_name == base_candidate or folder_name.startswith(base_candidate + '_'):
-                                            potential_dirs.append(project_folder)
-                                            break
-                                    # Check if scenario_id starts with folder name or vice versa
-                                    if scenario_id.startswith(folder_name) or folder_name.startswith(scenario_id):
-                                        if project_folder not in potential_dirs:
-                                            potential_dirs.append(project_folder)
-                                    # Check if they share significant prefix (at least 3 parts)
-                                    elif len(scenario_parts) >= 3:
-                                        folder_parts = folder_name.split('_')
-                                        # Check if first 3 parts match
-                                        if (len(folder_parts) >= 3 and 
-                                            scenario_parts[:3] == folder_parts[:3]):
-                                            if project_folder not in potential_dirs:
-                                                potential_dirs.append(project_folder)
+                            # If no task_category found, try to extract by difficulty patterns
+                            if base_id is None:
+                                # Try to find difficulty patterns: _easy_, _medium_, _hard_, _expert_
+                                difficulties = [d.value for d in DifficultyLevel]
+                                for diff in difficulties:
+                                    # Look for pattern like: ..._easy_01 or ..._easy_001
+                                    pattern = f"_{diff}_"
+                                    if pattern in scenario_id:
+                                        # Take everything before the difficulty (but after potential task_category)
+                                        parts = scenario_id.split(pattern)
+                                        if len(parts) > 1:
+                                            # Check if there's a task_category before difficulty
+                                            candidate_base = parts[0]
+                                            # Verify it doesn't contain another task_category
+                                            has_task_cat = any(f"_{tc}_" in candidate_base for tc in task_categories)
+                                            if not has_task_cat:
+                                                base_id = candidate_base
+                                                logger.debug(f"📋 Extracted base_id '{base_id}' from scenario_id '{scenario_id}' (matched difficulty: {diff})")
+                                                break
                             
-                            # If no exact match, use first potential match
-                            if project_dir is None and potential_dirs:
-                                project_dir = potential_dirs[0]
-                                logger.info(f"✅ Found project directory by pattern match: {project_dir} (from {len(potential_dirs)} candidates)")
+                            # Fallback: if still no match, try first few parts
+                            if base_id is None:
+                                scenario_parts = scenario_id.split('_')
+                                if len(scenario_parts) >= 3:
+                                    # Try first 3-4 parts as base_id
+                                    base_id = '_'.join(scenario_parts[:4])
+                                    logger.debug(f"📋 Using fallback base_id '{base_id}' from scenario_id '{scenario_id}'")
+                                else:
+                                    base_id = scenario_id
                             
-                            if project_dir is None:
-                                logger.warning(f"⚠️ Could not find project directory for scenario_id '{scenario_id}' in {generated_dir}")
-                                logger.debug(f"Available directories: {[d.name for d in generated_dir.iterdir() if d.is_dir()]}")
+                            # Now look for project directory: data/generated/{base_id}/{project_name}/
+                            base_project_dir = generated_dir / base_id
+                            
+                            if base_project_dir.exists() and base_project_dir.is_dir():
+                                # Look for project subdirectories inside base_id folder
+                                project_subdirs = [d for d in base_project_dir.iterdir() if d.is_dir()]
+                                
+                                if len(project_subdirs) == 1:
+                                    # Single project subdirectory - use it
+                                    project_dir = project_subdirs[0]
+                                    logger.info(f"✅ Found project directory: {project_dir} (single project in {base_id})")
+                                elif len(project_subdirs) > 1:
+                                    # Multiple project subdirectories - try to match by name or use first
+                                    # Try to find one that matches scenario context
+                                    project_dir = project_subdirs[0]
+                                    logger.info(f"✅ Found project directory: {project_dir} (using first of {len(project_subdirs)} projects in {base_id})")
+                                    logger.debug(f"Available project subdirectories: {[d.name for d in project_subdirs]}")
+                                else:
+                                    # No subdirectories - maybe project files are directly in base_id folder
+                                    project_dir = base_project_dir
+                                    logger.info(f"✅ Using base project directory directly: {project_dir}")
+                            else:
+                                # Fallback: try to find base_id as direct folder in generated_dir
+                                potential_dirs = []
+                                for folder in generated_dir.iterdir():
+                                    if folder.is_dir():
+                                        folder_name = folder.name
+                                        # Check if folder name matches base_id or starts with it
+                                        if folder_name == base_id or folder_name.startswith(base_id + '_'):
+                                            potential_dirs.append(folder)
+                                        # Also check if base_id starts with folder name
+                                        elif base_id.startswith(folder_name + '_'):
+                                            potential_dirs.append(folder)
+                                
+                                if potential_dirs:
+                                    project_dir = potential_dirs[0]
+                                    logger.info(f"✅ Found project directory by fallback match: {project_dir} (matched base_id: {base_id})")
+                                else:
+                                    logger.warning(f"⚠️ Could not find project directory for base_id '{base_id}' (from scenario_id '{scenario_id}')")
+                                    logger.debug(f"Expected path: {base_project_dir}")
+                                    logger.debug(f"Available directories in {generated_dir}: {[d.name for d in generated_dir.iterdir() if d.is_dir()]}")
                     
                     # Load files if we found project directory
                     if project_dir and project_dir.exists():
@@ -2520,6 +2552,10 @@ Generate your response now:"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                # Count tokens before making the call
+                prompt_tokens = count_tokens(solution_prompt, model_name=model_name, provider=model_key)
+                logger.info(f"📊 Prompt tokens: {prompt_tokens:,} (chars: {len(solution_prompt):,})")
+                
                 # For evaluation, use the specific model name instead of default config
                 if model_key == 'openai':
                     # Temporarily override the default model for this evaluation
