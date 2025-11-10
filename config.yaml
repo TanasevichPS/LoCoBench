@@ -1,5 +1,5 @@
 # LoCoBench Configuration File
-# Configuration for 4 Java projects: 2 hard + 2 expert scenarios
+# Configuration for all available Java scenarios: 232 hard + 184 expert = 416 total scenarios
 
 # =============================================================================
 # GENERAL CONFIGURATION - API & System Settings
@@ -56,13 +56,15 @@ phase1:
   supported_languages:
     - java
   
-  # Project generation distribution - 4 Java projects total
-  projects_per_language: 4
+  # Project generation distribution - all available Java projects
+  # Note: This will use all existing projects in data/generated/
+  projects_per_language: 100  # High limit to include all available projects
   
   # Complexity levels distribution for synthetic projects
+  # Note: Distribution will match existing projects
   complexity_distribution:
-    hard: 0.5     # 50% hard projects (2 projects)
-    expert: 0.5   # 50% expert projects (2 projects)
+    hard: 0.5     # 50% hard projects
+    expert: 0.5   # 50% expert projects
 
 # =============================================================================
 # PHASE 2 CONFIGURATION - Synthetic Codebase Generation  
@@ -83,23 +85,25 @@ phase2:
 # =============================================================================
 
 phase3:
-  # Scale parameters - 4 scenarios total (1 per project)
-  total_instances: 4
+  # Scale parameters - all available scenarios: 416 total (232 hard + 184 expert)
+  # Note: This will use all existing scenarios in data/output/scenarios/
+  total_instances: 416
   
   # Task category distribution (must sum to total_instances)
-  # Selected 4 categories, 1 scenario per category
+  # Distributed across all available task categories
   task_distribution:
-    architectural_understanding: 1    # Deep architectural analysis
-    cross_file_refactoring: 1        # Multi-file code restructuring
-    feature_implementation: 1        # Complex feature development
-    bug_investigation: 1             # Real-world debugging scenarios
+    architectural_understanding: 104   # 25% - Deep architectural analysis
+    code_comprehension: 104           # 25% - Code flow understanding
+    security_analysis: 104            # 25% - Security audit and analysis
+    feature_implementation: 104       # 25% - Complex feature development
   
   # Difficulty distribution (must sum to total_instances)
+  # Matches actual scenario distribution: 232 hard + 184 expert
   difficulty_distribution:
     easy: 0      # 10K-100K tokens 
     medium: 0    # 100K-200K tokens
-    hard: 2      # 200K-500K tokens (2 scenarios)
-    expert: 2    # 500K-1000K tokens (2 scenarios)
+    hard: 232    # 200K-500K tokens (232 scenarios)
+    expert: 184  # 500K-1000K tokens (184 scenarios)
   
   # Context length ranges (min_tokens, max_tokens)
   context_ranges:
