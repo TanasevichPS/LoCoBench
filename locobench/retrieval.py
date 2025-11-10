@@ -835,18 +835,18 @@ def retrieve_relevant_embedding(
     # Apply multipliers based on task type (after detection)
     original_selected_count = selected_count
     if is_architectural_task:
-        # For architectural tasks, increase file count moderately (but not too aggressive)
-        # This helps capture more architectural context without overwhelming the prompt
-        architectural_multiplier = 1.25  # 25% more files (conservative increase)
+        # For architectural tasks, increase file count more aggressively
+        # Architectural tasks need more context to understand system structure
+        architectural_multiplier = 1.40  # Increased from 1.25 to 1.40 (40% more files)
         selected_count = int(selected_count * architectural_multiplier)
         selected_count = min(selected_count, len(candidates))
         logger.debug("🏗️ Architectural task: increased file count from %d to %d (%.1fx)", 
                     original_selected_count, selected_count, architectural_multiplier)
     elif is_code_comprehension_task:
         # Moderate increase for code comprehension to capture more flow context
-        selected_count = int(selected_count * 1.15)  # 15% more files
+        selected_count = int(selected_count * 1.20)  # Increased from 1.15 to 1.20
         selected_count = min(selected_count, len(candidates))
-        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.15x)", 
+        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.20x)", 
                     original_selected_count, selected_count)
     
     # Optimized adaptive ratios based on task type
@@ -908,33 +908,33 @@ def retrieve_relevant_embedding(
             # 1. Boost for architectural keywords in path/name (further increased)
             keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
             if keyword_matches > 0:
-                boost += 0.18 + (keyword_matches * 0.02)  # Base 0.18 + 0.02 per additional keyword (max ~0.30)
+                boost += 0.22 + (keyword_matches * 0.03)  # Increased: Base 0.22 + 0.03 per keyword (max ~0.40)
             
             # 2. Boost for architectural patterns in content (increased and extended scan)
-            content_preview = file_info.get("content", "")[:2000]  # Extended to 2000 chars
+            content_preview = file_info.get("content", "")[:2500]  # Extended to 2500 chars (was 2000)
             content_lower = content_preview.lower()
             architectural_patterns = [
                 'interface ', 'abstract class', 'implements', 'extends', 'public class',
                 'public interface', '@service', '@component', '@repository', '@entity',
-                'class.*extends', 'class.*implements'
+                'class.*extends', 'class.*implements', 'extends.*implements', 'implements.*extends'
             ]
             pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
             if pattern_matches > 0:
-                boost += 0.25 + (pattern_matches * 0.05)  # Base 0.25 + 0.05 per pattern
+                boost += 0.28 + (pattern_matches * 0.06)  # Increased: Base 0.28 + 0.06 per pattern
             
             # 3. Boost for files with high similarity already (they're likely relevant)
-            if original_sim > 0.20:  # Lowered threshold from 0.25 to 0.20
-                boost += 0.12  # Increased from 0.10
+            if original_sim > 0.18:  # Lowered threshold from 0.20 to 0.18
+                boost += 0.15  # Increased from 0.12
             
             # 4. Boost for files mentioned in task prompt (by name)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.15  # Increased from 0.10
+                boost += 0.18  # Increased from 0.15
             
             # 5. Additional boost for entry points and configuration files
             if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
-                boost += 0.12  # Additional boost for entry points
+                boost += 0.15  # Increased from 0.12
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
@@ -950,9 +950,9 @@ def retrieve_relevant_embedding(
     
     # For architectural tasks, apply quality filter - only select files with good similarity
     if is_architectural_task:
-        # Filter to files with similarity > 0.12 (after boost) to ensure quality
-        # This is a soft filter - we still want to capture architectural files even if similarity is moderate
-        quality_threshold = 0.12
+        # Filter to files with similarity > 0.10 (after boost) to ensure quality
+        # Lowered threshold to capture more architectural files while maintaining quality
+        quality_threshold = 0.10  # Lowered from 0.12 to capture more files
         quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
         if len(quality_files) >= level1_count:
             level1_files = quality_files[:level1_count]
