@@ -2502,6 +2502,109 @@ class LoCoBenchEvaluator:
 
 Generate your response now:"""
 
+        # Check prompt size and trim context if needed
+        # Model limit: 31999 tokens, approximate conversion: 1 token ≈ 4 chars
+        # Leave ~5000 tokens (~20000 chars) for prompt overhead (instructions, task, etc.)
+        # So max context should be ~28000 tokens ≈ 112000 chars
+        MAX_PROMPT_TOKENS = 31999
+        TOKENS_PER_CHAR = 4  # Approximate conversion
+        PROMPT_OVERHEAD_TOKENS = 5000  # Reserve for prompt structure
+        MAX_CONTEXT_TOKENS = MAX_PROMPT_TOKENS - PROMPT_OVERHEAD_TOKENS
+        MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * TOKENS_PER_CHAR
+        
+        prompt_size_chars = len(solution_prompt)
+        prompt_size_tokens_approx = prompt_size_chars / TOKENS_PER_CHAR
+        
+        if prompt_size_tokens_approx > MAX_PROMPT_TOKENS:
+            logger.warning(
+                "⚠️ Prompt too large: %d chars (~%d tokens), max is %d tokens. Trimming context...",
+                prompt_size_chars,
+                int(prompt_size_tokens_approx),
+                MAX_PROMPT_TOKENS,
+            )
+            
+            # Calculate how much to trim from context_section
+            prompt_without_context = solution_prompt.replace(context_section, "")
+            overhead_size = len(prompt_without_context)
+            available_for_context = MAX_CONTEXT_CHARS - overhead_size
+            
+            if available_for_context > 0:
+                # Trim context_section to fit
+                if len(context_section) > available_for_context:
+                    # Try to preserve structure - trim from the end of file contents
+                    logger.info(
+                        "✂️ Trimming context from %d to %d chars",
+                        len(context_section),
+                        available_for_context,
+                    )
+                    
+                    # Simple truncation - keep header, trim content
+                    lines = context_section.split('\n')
+                    trimmed_lines = []
+                    current_size = 0
+                    for line in lines:
+                        line_size = len(line) + 1  # +1 for newline
+                        if current_size + line_size <= available_for_context:
+                            trimmed_lines.append(line)
+                            current_size += line_size
+                        else:
+                            # Add partial line if space allows
+                            remaining = available_for_context - current_size
+                            if remaining > 100:  # Only if meaningful space left
+                                trimmed_lines.append(line[:remaining] + "\n... [context truncated to fit model limits]")
+                            break
+                    
+                    context_section = '\n'.join(trimmed_lines)
+                    
+                    # Rebuild prompt with trimmed context
+                    solution_prompt = f"""You are an expert {config['engineer']}. Your task is to provide a complete, working solution.
+
+**TASK**: {scenario.get('title', 'Development Task')}
+
+**DESCRIPTION**: {scenario.get('description', '')}
+
+**REQUIREMENTS**: 
+{formatted_requirements}
+
+{context_section}
+
+**CRITICAL INSTRUCTIONS**:
+1. You MUST respond with valid JSON in the exact format shown below
+2. Each file MUST contain complete, syntactically correct {language.upper()} code
+3. Do NOT truncate your response - provide the complete solution
+4. Use {config['practices']}
+
+**REQUIRED RESPONSE FORMAT**:
+```json
+{{
+    "approach": "Your solution strategy (keep under 200 words)",
+    "files": {{
+{file_examples}
+    }},
+    "explanation": "Implementation details (keep under 300 words)"
+}}
+```
+
+**VALIDATION CHECKLIST**:
+- ✅ Response is valid JSON wrapped in ```json blocks
+- ✅ All strings are properly escaped (\\n for newlines, \\" for quotes)
+- ✅ Each file contains complete {language.upper()} code
+- ✅ Code compiles and addresses all requirements
+- ✅ Response is complete (not truncated)
+
+Generate your response now:"""
+                    
+                    logger.info(
+                        "✅ Trimmed prompt: %d chars (~%d tokens)",
+                        len(solution_prompt),
+                        int(len(solution_prompt) / TOKENS_PER_CHAR),
+                    )
+            else:
+                logger.error(
+                    "❌ Cannot fit prompt even without context! Overhead: %d chars",
+                    overhead_size,
+                )
+
         # Map model names to our generator keys  
         model_key_mapping = {
             # Generic mappings

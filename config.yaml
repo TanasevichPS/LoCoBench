@@ -11,7 +11,7 @@ retrieval:
     - expert
   enabled: true
   top_percent: 0.05
-  max_context_tokens: 2048
+  max_context_tokens: 25000  # ~6000-8000 tokens, leaving room for prompt overhead
   method: embedding
   model_name: all-MiniLM-L6-v2
   local_model_path: null
