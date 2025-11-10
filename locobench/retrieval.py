@@ -452,6 +452,9 @@ def _build_dependency_graph_fast(candidate_files: List[Dict[str, Any]], project_
             if normalized_dep in file_map:
                 internal_deps.add(normalized_dep)
             else:
+                # Try matching by filename first
+                dep_filename = Path(normalized_dep).stem
+                
                 # For Java: try matching by class name (last part of package)
                 if file_ext == '.java':
                     # Check if dep_path is just a class name (no path separators, no .java extension)
@@ -476,9 +479,22 @@ def _build_dependency_graph_fast(candidate_files: List[Dict[str, Any]], project_
                                             best_score = score
                                             best_match = candidate
                                 internal_deps.add(best_match)
+                    
+                    # Also try partial class name matching (e.g., "RoomStore" matches "RoomStoreRepository")
+                    # This is important for Java where classes often have related names
+                    if dep_filename and len(dep_filename) > 3:
+                        for class_name in filename_map.keys():
+                            if class_name != dep_filename and len(class_name) > 3:
+                                # Check if one contains the other (bidirectional)
+                                if dep_filename in class_name or class_name in dep_filename:
+                                    # Prefer exact matches first, but include partial matches
+                                    if len(filename_map[class_name]) == 1:
+                                        internal_deps.add(filename_map[class_name][0])
+                                    else:
+                                        # Use first match for partial matches
+                                        internal_deps.add(filename_map[class_name][0])
                 
                 # Try matching by filename
-                dep_filename = Path(normalized_dep).stem
                 if dep_filename in filename_map:
                     if len(filename_map[dep_filename]) == 1:
                         internal_deps.add(filename_map[dep_filename][0])
@@ -526,28 +542,82 @@ def _find_dependent_files(
 ) -> List[Dict[str, Any]]:
     """
     Find files that depend on selected files or are depended upon by selected files.
-    Returns list of file_info dicts.
+    Uses multiple strategies to find dependencies.
     """
     # Normalize selected file paths
     selected_paths = {_normalize_relative_path(file_info["path"]) for file_info in selected_files}
     dependent_paths: Set[str] = set()
     
-    # Find files that depend on selected files (reverse dependencies)
+    # Strategy 1: Find files that depend on selected files (reverse dependencies)
     for selected_path in selected_paths:
         dependents = reverse_graph.get(selected_path, set())
         dependent_paths.update(dependents)
     
-    # Find files that selected files depend on (forward dependencies)
+    # Strategy 2: Find files that selected files depend on (forward dependencies)
     for selected_path in selected_paths:
         dependencies = dependency_graph.get(selected_path, set())
         dependent_paths.update(dependencies)
+    
+    # Strategy 3: Find files in same directory as selected files (co-location heuristic)
+    selected_dirs: Set[str] = set()
+    for file_info in selected_files:
+        file_path = _normalize_relative_path(file_info["path"])
+        file_dir = str(Path(file_path).parent)
+        selected_dirs.add(file_dir)
+    
+    # Add files from same directories (up to 30% of max_dependent_files)
+    same_dir_files = []
+    file_map = {_normalize_relative_path(file_info["path"]): file_info for file_info in candidate_files}
+    for file_path, file_info in file_map.items():
+        if file_path not in selected_paths and file_path not in dependent_paths:
+            file_dir = str(Path(file_path).parent)
+            if file_dir in selected_dirs:
+                same_dir_files.append(file_info)
+    
+    # Add top same-dir files by similarity if we have it
+    if same_dir_files:
+        same_dir_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
+        same_dir_limit = max(1, int(max_dependent_files * 0.3))
+        for file_info in same_dir_files[:same_dir_limit]:
+            file_path = _normalize_relative_path(file_info["path"])
+            if file_path not in selected_paths:
+                dependent_paths.add(file_path)
+    
+    # Strategy 4: Find files with similar names (heuristic for related files)
+    selected_stems: Set[str] = set()
+    for file_info in selected_files:
+        file_path = _normalize_relative_path(file_info["path"])
+        stem = Path(file_path).stem.lower()
+        selected_stems.add(stem)
+    
+    # Look for files with similar stems (e.g., RoomStore and RoomStoreRepository)
+    similar_name_files = []
+    for file_path, file_info in file_map.items():
+        if file_path not in selected_paths and file_path not in dependent_paths:
+            stem = Path(file_path).stem.lower()
+            # Check if stem contains or is contained in any selected stem
+            for selected_stem in selected_stems:
+                if (selected_stem in stem or stem in selected_stem) and stem != selected_stem:
+                    similar_name_files.append(file_info)
+                    break
+    
+    # Add top similar-name files
+    if similar_name_files:
+        similar_name_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
+        similar_limit = max(1, int(max_dependent_files * 0.2))
+        for file_info in similar_name_files[:similar_limit]:
+            file_path = _normalize_relative_path(file_info["path"])
+            if file_path not in selected_paths:
+                dependent_paths.add(file_path)
     
     # Remove files that are already selected
     dependent_paths -= selected_paths
     
     # Create file_info dicts for dependent files from candidates
-    file_map = {_normalize_relative_path(file_info["path"]): file_info for file_info in candidate_files}
     dependent_files = [file_map[path] for path in dependent_paths if path in file_map]
+    
+    # Sort by similarity if available, otherwise keep order
+    dependent_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
     
     return dependent_files[:max_dependent_files]
 
@@ -777,20 +847,20 @@ def retrieve_relevant_embedding(
     # Code comprehension needs balanced approach with good semantic coverage
     if is_architectural_task:
         # For architectural tasks: MORE files overall, MORE dependencies, strong boost
-        # Strategy: Increase total selection by 1.5x, prioritize dependencies
-        level1_ratio = 0.55  # Slightly less semantic to make room for dependencies
-        level2_ratio = 0.35  # MORE dependencies (structure is critical)
+        # Strategy: Increase total selection by 2.0x (was 1.5x), prioritize dependencies
+        level1_ratio = 0.50  # Less semantic to make more room for dependencies
+        level2_ratio = 0.40  # MORE dependencies (structure is critical) - increased from 35%
         level3_ratio = 0.10
-        # Increase total selection for architectural tasks
-        selected_count = int(selected_count * 1.5)  # 50% more files for architectural understanding
-        logger.debug("🏗️ Architectural task detected: L1=55%, L2=35%, L3=10%, Total=%d files (1.5x)", selected_count)
+        # Increase total selection for architectural tasks - MORE aggressive
+        selected_count = int(selected_count * 2.0)  # 100% more files for architectural understanding
+        logger.debug("🏗️ Architectural task detected: L1=50%, L2=40%, L3=10%, Total=%d files (2.0x)", selected_count)
     elif is_code_comprehension_task:
         # For code comprehension: balanced semantic + dependencies (need to trace flow)
-        level1_ratio = 0.70  # More semantic for better understanding
-        level2_ratio = 0.25  # Important dependencies for tracing
+        level1_ratio = 0.65  # Good semantic coverage
+        level2_ratio = 0.30  # MORE dependencies for tracing (increased from 25%)
         level3_ratio = 0.05  # Less important files
-        selected_count = int(selected_count * 1.2)  # 20% more files for comprehension
-        logger.debug("🔍 Code comprehension task detected: L1=70%, L2=25%, L3=5%, Total=%d files (1.2x)", selected_count)
+        selected_count = int(selected_count * 1.3)  # 30% more files for comprehension (increased from 20%)
+        logger.debug("🔍 Code comprehension task detected: L1=65%, L2=30%, L3=5%, Total=%d files (1.3x)", selected_count)
     elif is_security_task:
         # For security: more semantic (find security-related code)
         level1_ratio = 0.75  # Maximum semantic for finding security issues
@@ -834,23 +904,28 @@ def retrieve_relevant_embedding(
             # Strong boost for architectural keywords in path/name
             for keyword in architectural_keywords:
                 if keyword in file_path_lower or keyword in file_name_lower:
-                    boost += 0.15  # Increased boost
+                    boost += 0.20  # Increased boost from 0.15 to 0.20
             
             # Strong boost for architectural patterns in content
-            content_preview = file_info.get("content", "")[:1500]  # Check first 1500 chars
+            content_preview = file_info.get("content", "")[:2000]  # Check first 2000 chars (increased from 1500)
             content_lower = content_preview.lower()
             architectural_patterns = [
                 'interface ', 'abstract class', 'implements', 'extends', 
                 'public class', 'public interface', '@service', '@component',
-                '@repository', '@entity', 'class.*extends', 'class.*implements'
+                '@repository', '@entity', 'class.*extends', 'class.*implements',
+                'public abstract', 'extends.*implements', 'implements.*extends'
             ]
             pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
             if pattern_matches > 0:
-                boost += 0.20 + (pattern_matches * 0.05)  # Stronger boost for multiple patterns
+                boost += 0.25 + (pattern_matches * 0.08)  # Stronger boost (was 0.20 + 0.05)
             
             # Additional boost for files that are likely architectural entry points
-            if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory']):
-                boost += 0.10
+            if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
+                boost += 0.15  # Increased from 0.10
+            
+            # Extra boost for files with high similarity already (they're likely relevant)
+            if file_info.get("similarity", 0.0) > 0.3:
+                boost += 0.10  # Additional boost for already relevant files
             
             if boost > 0:
                 original_sim = file_info.get("similarity", 0.0)
@@ -883,7 +958,13 @@ def retrieve_relevant_embedding(
             dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
             
             # For architectural tasks, allow more dependent files to be found
-            max_dependent_multiplier = 2.0 if is_architectural_task else 1.5
+            # For code comprehension, also allow more (need to trace flow)
+            if is_architectural_task:
+                max_dependent_multiplier = 3.0
+            elif is_code_comprehension_task:
+                max_dependent_multiplier = 2.5  # More dependencies for tracing
+            else:
+                max_dependent_multiplier = 2.0
             max_dependent_files = min(
                 int(level2_count * max_dependent_multiplier), 
                 selected_count - level1_count
@@ -898,6 +979,24 @@ def retrieve_relevant_embedding(
                 max_dependent_files=max_dependent_files
             )
             
+            # If we didn't find enough dependencies, use fallback strategies
+            if len(dependent_files) < level2_count:
+                # Fallback: Add more semantic files that weren't selected yet
+                remaining_semantic = [
+                    f for f in ranked_files[len(level1_files):] 
+                    if _normalize_relative_path(f["path"]) not in {
+                        _normalize_relative_path(d["path"]) for d in level1_files + dependent_files
+                    }
+                ]
+                needed = level2_count - len(dependent_files)
+                fallback_files = remaining_semantic[:needed]
+                dependent_files.extend(fallback_files)
+                logger.debug(
+                    "📊 Level 2 fallback: added %d semantic files (total dependencies: %d)",
+                    len(fallback_files),
+                    len(dependent_files)
+                )
+            
             # Limit to level2_count
             dependent_files = dependent_files[:level2_count]
             
@@ -908,7 +1007,16 @@ def retrieve_relevant_embedding(
             )
         except Exception as e:
             logger.debug("Dependency analysis skipped or failed: %s", e)
-            dependent_files = []
+            # Fallback: use semantic files if dependency analysis fails
+            if level2_count > 0:
+                remaining_semantic = ranked_files[len(level1_files):len(level1_files) + level2_count]
+                dependent_files = [
+                    f for f in remaining_semantic 
+                    if _normalize_relative_path(f["path"]) not in {
+                        _normalize_relative_path(l1["path"]) for l1 in level1_files
+                    }
+                ][:level2_count]
+                logger.debug("📊 Level 2 fallback (dependency analysis failed): using %d semantic files", len(dependent_files))
     
     # Level 3: Beginning of other important files (adaptive based on task type)
     remaining_budget = selected_count - len(level1_files) - len(dependent_files)
