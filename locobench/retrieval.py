@@ -226,7 +226,11 @@ def _load_embedding_model(
             if resolved.exists():
                 logger.info("🔄 Loading retrieval model from local path: %s", resolved)
                 try:
-                    MODEL_CACHE[cache_key] = SentenceTransformer(str(resolved))
+                    # VESO models require trust_remote_code=True
+                    MODEL_CACHE[cache_key] = SentenceTransformer(
+                        str(resolved),
+                        trust_remote_code=True
+                    )
                     logger.info("✅ Successfully loaded local retrieval model: %s", resolved)
                     return MODEL_CACHE[cache_key]
                 except Exception as local_exc:
