@@ -453,6 +453,54 @@ def retrieve_relevant_embedding(
 
     ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
     selected_files = ranked_files[:selected_count]
+    
+    # For architectural understanding, boost files that are architecturally important
+    # (interfaces, abstract classes, config files, main entry points)
+    if smart_chunking:
+        # Check if this might be an architectural task (heuristic based on prompt)
+        is_architectural_task = any(
+            keyword in task_prompt.lower() 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
+        )
+        
+        if is_architectural_task:
+            logger.debug("🏗️ Detected architectural task, boosting architectural files")
+            
+            # Boost files that are architecturally important
+            architectural_keywords = [
+                'interface', 'abstract', 'base', 'config', 'main', 'entry', 
+                'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
+                'controller', 'model', 'view', 'util', 'common', 'core', 'api'
+            ]
+            
+            for file_info in selected_files:
+                file_path_lower = file_info["path"].lower()
+                file_name_lower = Path(file_info["path"]).name.lower()
+                
+                # Boost similarity for architectural files
+                boost = 0.0
+                for keyword in architectural_keywords:
+                    if keyword in file_path_lower or keyword in file_name_lower:
+                        boost += 0.1
+                
+                # Also boost files with common architectural patterns in content
+                content_lower = file_info.get("content", "").lower()[:500]  # Check first 500 chars
+                if any(pattern in content_lower for pattern in ['interface ', 'abstract class', 'implements', 'extends']):
+                    boost += 0.15
+                
+                if boost > 0:
+                    original_sim = file_info.get("similarity", 0.0)
+                    file_info["similarity"] = min(1.0, original_sim + boost)
+                    logger.debug(
+                        "Boosted %s: %.3f -> %.3f (+%.3f)",
+                        file_info["path"],
+                        original_sim,
+                        file_info["similarity"],
+                        boost,
+                    )
+            
+            # Re-sort after boosting
+            selected_files = sorted(selected_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
 
     if smart_chunking:
         # Split files into chunks and rank chunks by relevance
@@ -488,7 +536,13 @@ def retrieve_relevant_embedding(
         # Select top chunks per file with smart strategy:
         # 1. Always include the first chunk (file header, imports, class definitions)
         # 2. Then select most relevant chunks with diversification (spread across file)
+        # 3. For architectural tasks, prioritize beginning chunks (class/interface definitions)
         selected_chunks: List[Dict[str, Any]] = []
+        is_architectural_task = any(
+            keyword in task_prompt.lower() 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
+        )
+        
         for file_path, file_chunks in chunks_by_file.items():
             # Sort chunks by position in file to find first chunk
             file_chunks_sorted_by_pos = sorted(file_chunks, key=lambda c: c.get("chunk_index", 0))
@@ -502,25 +556,36 @@ def retrieve_relevant_embedding(
             if first_chunk:
                 top_chunks.append(first_chunk)
             
+            # For architectural tasks, also prioritize first few chunks (class definitions)
+            if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
+                # Include first 2-3 chunks if they exist (usually contain class/interface definitions)
+                for i in range(1, min(3, len(file_chunks_sorted_by_pos))):
+                    early_chunk = file_chunks_sorted_by_pos[i]
+                    if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
+                        # Boost early chunks slightly for architectural understanding
+                        early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.05
+                        top_chunks.append(early_chunk)
+            
             # Diversification strategy: select chunks from different parts of the file
             # Divide file into regions and try to get at least one chunk from each region
             if len(file_chunks_sorted_by_pos) > 1:
-                num_regions = min(3, chunks_per_file - 1)  # 3 regions: beginning, middle, end
-                region_size = len(file_chunks_sorted_by_pos) // num_regions
-                
-                # Try to get one chunk from each region
-                for region_idx in range(num_regions):
-                    region_start = region_idx * region_size
-                    region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
-                    region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
+                num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
+                if num_regions > 0:
+                    region_size = len(file_chunks_sorted_by_pos) // num_regions
                     
-                    # Find most relevant chunk in this region
-                    if region_chunks:
-                        region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
-                        best_in_region = region_chunks_by_relevance[0]
+                    # Try to get one chunk from each region
+                    for region_idx in range(num_regions):
+                        region_start = region_idx * region_size
+                        region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
+                        region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
                         
-                        if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
-                            top_chunks.append(best_in_region)
+                        # Find most relevant chunk in this region
+                        if region_chunks:
+                            region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+                            best_in_region = region_chunks_by_relevance[0]
+                            
+                            if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
+                                top_chunks.append(best_in_region)
             
             # Fill remaining slots with top relevant chunks
             for chunk in file_chunks_sorted_by_relevance:
@@ -532,10 +597,11 @@ def retrieve_relevant_embedding(
             selected_chunks.extend(top_chunks)
             
             logger.debug(
-                "File %s: selected %d chunks (first chunk: %s, diversification: %s, top similarity: %.3f)",
+                "File %s: selected %d chunks (first chunk: %s, early chunks: %d, diversification: %s, top similarity: %.3f)",
                 file_path,
                 len(top_chunks),
                 "yes" if first_chunk in top_chunks else "no",
+                sum(1 for c in top_chunks if c.get("chunk_index", 0) < 3),
                 "yes" if len(set(c.get("chunk_index", 0) for c in top_chunks)) > 2 else "no",
                 file_chunks_sorted_by_relevance[0].get("similarity", 0.0) if file_chunks_sorted_by_relevance else 0.0,
             )

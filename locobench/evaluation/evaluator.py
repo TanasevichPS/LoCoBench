@@ -2330,6 +2330,32 @@ class LoCoBenchEvaluator:
                 else:
                     context_files_content = {}
 
+                # Adjust retrieval parameters based on task category
+                task_category = scenario.get('task_category', '').lower()
+                
+                # For architectural_understanding, we need broader context
+                # - More files to understand architecture
+                # - More chunks per file to see relationships
+                # - Larger chunks to preserve architectural patterns
+                if task_category == 'architectural_understanding':
+                    effective_top_percent = min(0.40, retrieval_config.top_percent * 2)  # Double file coverage
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 5) * 2  # Double chunks
+                    effective_chunk_size = max(3000, getattr(retrieval_config, 'retrieval_chunk_size', 2000) * 1.5)  # Larger chunks
+                    effective_max_context = min(150000, retrieval_config.max_context_tokens * 1.5)  # More context
+                    logger.info(
+                        "🏗️ Architectural understanding task: using enhanced retrieval "
+                        "(top_percent=%.2f, chunks_per_file=%d, chunk_size=%d, max_context=%d)",
+                        effective_top_percent,
+                        effective_chunks_per_file,
+                        effective_chunk_size,
+                        effective_max_context,
+                    )
+                else:
+                    effective_top_percent = retrieval_config.top_percent
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 5)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                
                 retrieved_context = retrieve_relevant(
                     context_files_content,
                     task_prompt_text,
@@ -2337,13 +2363,13 @@ class LoCoBenchEvaluator:
                     method=retrieval_config.method,
                     model_name=retrieval_config.model_name,
                     project_dir=project_dir,
-                    top_percent=retrieval_config.top_percent,
-                    max_context_tokens=retrieval_config.max_context_tokens,
+                    top_percent=effective_top_percent,
+                    max_context_tokens=effective_max_context,
                     local_model_path=retrieval_config.local_model_path,
                     chunk_size=retrieval_config.chunk_size,
                     smart_chunking=getattr(retrieval_config, 'smart_chunking', True),
-                    chunks_per_file=getattr(retrieval_config, 'chunks_per_file', 5),
-                    retrieval_chunk_size=getattr(retrieval_config, 'retrieval_chunk_size', 2000),
+                    chunks_per_file=effective_chunks_per_file,
+                    retrieval_chunk_size=int(effective_chunk_size),
                 )
 
                 if retrieved_context:
