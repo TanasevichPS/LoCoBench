@@ -10,11 +10,11 @@ retrieval:
     - hard
     - expert
   enabled: true
-  top_percent: 0.25  # Optimized: architectural tasks get 1.5x = 37.5%, evaluator doubles to 50% max
+  top_percent: 0.20  # Increased from 0.05 to 0.20 (20% of files instead of 5%)
   max_context_tokens: 100000  # Increased from 25000 to 100000 (~25K tokens, comparable to truncation)
   method: embedding
-  model_name: all-MiniLM-L6-v2  # Fallback model name (used if local_model_path fails)
-  local_model_path: "/srv/nfs/VESO/models/veso-models/VESO-30alpha3"  # Local VESO model for embeddings
+  model_name: all-MiniLM-L6-v2
+  local_model_path: null
   top_k: 10  # Increased from 5 to 10 as fallback
   smart_chunking: true  # Enable smart chunking: select most relevant chunks from files
   chunks_per_file: 8  # Increased from 5 to 8 - more chunks per file for better coverage
