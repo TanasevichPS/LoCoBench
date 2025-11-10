@@ -47,6 +47,48 @@ def create_config_without_retrieval(base_config_path, output_path, timestamp):
     print(f"   Retrieval enabled: {config['retrieval']['enabled']}")
     print(f"   Output dir: {config['data']['output_dir']}")
 
+def cleanup_intermediate_results(config_path):
+    """Удаляет папку intermediate_results из конфига и абсолютный путь перед запуском"""
+    cleaned_paths = []
+    
+    # 1. Очищаем папку из конфига (относительный путь)
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        output_dir = Path(config['data']['output_dir'])
+        intermediate_dir = output_dir / "intermediate_results"
+        
+        if intermediate_dir.exists():
+            print(f"🧹 Cleaning up intermediate_results (from config): {intermediate_dir}")
+            shutil.rmtree(intermediate_dir)
+            cleaned_paths.append(str(intermediate_dir))
+            print(f"   ✅ Removed: {intermediate_dir}")
+        else:
+            print(f"   ℹ️  No intermediate_results found (from config): {intermediate_dir}")
+    except Exception as e:
+        print(f"   ⚠️  Warning: Could not clean intermediate_results from config: {e}")
+    
+    # 2. Очищаем абсолютный путь (может быть жестко закодирован)
+    absolute_intermediate_paths = [
+        Path("/srv/nfs/VESO/home/polina/trsh/LoCoBench/intermediate_results"),
+        Path("./intermediate_results"),
+        Path("data/output/intermediate_results"),
+    ]
+    
+    for abs_path in absolute_intermediate_paths:
+        if abs_path.exists():
+            print(f"🧹 Cleaning up intermediate_results (absolute path): {abs_path}")
+            try:
+                shutil.rmtree(abs_path)
+                cleaned_paths.append(str(abs_path))
+                print(f"   ✅ Removed: {abs_path}")
+            except Exception as e:
+                print(f"   ⚠️  Warning: Could not remove {abs_path}: {e}")
+    
+    if not cleaned_paths:
+        print(f"   ℹ️  No intermediate_results directories found to clean")
+
 def run_evaluation(config_path, model, output_file, description):
     """Запускает оценку с указанными параметрами"""
     print(f"\n{'='*60}")
@@ -55,6 +97,11 @@ def run_evaluation(config_path, model, output_file, description):
     print(f"Config: {config_path}")
     print(f"Model: {model}")
     print(f"Output: {output_file}")
+    print()
+    
+    # Очищаем чекпоинты перед запуском
+    print("🧹 Cleaning up checkpoints before evaluation...")
+    cleanup_intermediate_results(config_path)
     print()
     
     cmd = [
