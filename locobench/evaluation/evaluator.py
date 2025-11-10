@@ -2200,8 +2200,7 @@ class LoCoBenchEvaluator:
         
 
 
-        # Apply retrieval if enabled and scenario difficulty matches
-        retrieved_context = ""
+        # Get difficulty and retrieval config
         difficulty = scenario.get('difficulty', '').lower()
         retrieval_config = self.config.retrieval
 
@@ -2267,13 +2266,22 @@ class LoCoBenchEvaluator:
 
             return None
 
-        project_dir: Optional[Path] = None
+        # Resolve project directory (needed for both retrieval and non-retrieval cases)
+        project_dir: Optional[Path] = _resolve_project_dir_for_scenario()
+        if project_dir:
+            logger.debug("📁 Resolved project directory: %s", project_dir)
+        else:
+            logger.debug("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
 
+        # Determine if we should load all project files (for hard/expert scenarios)
+        difficulty = scenario.get('difficulty', '').lower()
+        should_load_all_files = difficulty in ['hard', 'expert']
+        
+        retrieved_context = ""
         if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
             try:
                 logger.info("🔍 Applying retrieval for %s scenario: %s", difficulty, scenario.get('id', 'unknown'))
 
-                project_dir = _resolve_project_dir_for_scenario()
                 if project_dir:
                     logger.info("📁 Using project directory for retrieval: %s", project_dir)
                 else:
@@ -2281,18 +2289,73 @@ class LoCoBenchEvaluator:
 
                 context_obj = scenario.get('context_files')
                 if isinstance(context_obj, dict):
+                    # Context files already provided as dict with content
                     context_files_content = {
                         path: content for path, content in context_obj.items() if isinstance(content, str)
                     }
+                    # For hard/expert: if we have project_dir, also load all project files for retrieval
+                    if should_load_all_files and project_dir and project_dir.exists():
+                        logger.info("📚 Loading additional project files for hard/expert scenario")
+                        all_project_files = load_context_files_from_scenario(
+                            scenario,
+                            project_dir=project_dir,
+                            include_all_project_files=True,
+                        )
+                        # Merge with existing context files (project files take precedence if path matches)
+                        context_files_content.update(all_project_files)
                 elif isinstance(context_obj, list) and project_dir:
                     context_files_content = load_context_files_from_scenario(
                         scenario,
                         project_dir=project_dir,
-                        include_all_project_files=False,
+                        include_all_project_files=should_load_all_files,
+                    )
+                    # If no files were loaded, try loading all project files as fallback
+                    if not context_files_content and project_dir.exists():
+                        logger.warning(
+                            "⚠️ No files found from context_files list, falling back to loading all project files for retrieval"
+                        )
+                        context_files_content = load_context_files_from_scenario(
+                            scenario,
+                            project_dir=project_dir,
+                            include_all_project_files=True,
+                        )
+                elif (context_obj is None or (isinstance(context_obj, list) and not project_dir)) and project_dir and project_dir.exists():
+                    # No context_files or no project_dir - try to load all project files
+                    logger.info("📚 No context_files specified, loading all project files for retrieval")
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
                     )
                 else:
                     context_files_content = {}
 
+                # Adjust retrieval parameters based on task category
+                task_category = scenario.get('task_category', '').lower()
+                
+                # For architectural_understanding, we need broader context
+                # Architectural tasks benefit from seeing complete files rather than chunks
+                # to understand relationships and patterns
+                if task_category == 'architectural_understanding':
+                    effective_top_percent = min(0.40, retrieval_config.top_percent * 2)  # Double file coverage
+                    effective_chunks_per_file = 0  # Use full files instead of chunks for architectural understanding
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = min(150000, retrieval_config.max_context_tokens * 1.5)  # More context
+                    use_smart_chunking = False  # Disable chunking for architectural tasks - use full files
+                    logger.info(
+                        "🏗️ Architectural understanding task: using full files strategy "
+                        "(top_percent=%.2f, smart_chunking=%s, max_context=%d)",
+                        effective_top_percent,
+                        use_smart_chunking,
+                        effective_max_context,
+                    )
+                else:
+                    effective_top_percent = retrieval_config.top_percent
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 5)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                
                 retrieved_context = retrieve_relevant(
                     context_files_content,
                     task_prompt_text,
@@ -2300,10 +2363,13 @@ class LoCoBenchEvaluator:
                     method=retrieval_config.method,
                     model_name=retrieval_config.model_name,
                     project_dir=project_dir,
-                    top_percent=retrieval_config.top_percent,
-                    max_context_tokens=retrieval_config.max_context_tokens,
+                    top_percent=effective_top_percent,
+                    max_context_tokens=effective_max_context,
                     local_model_path=retrieval_config.local_model_path,
                     chunk_size=retrieval_config.chunk_size,
+                    smart_chunking=use_smart_chunking,
+                    chunks_per_file=effective_chunks_per_file,
+                    retrieval_chunk_size=int(effective_chunk_size),
                 )
 
                 if retrieved_context:
@@ -2327,8 +2393,100 @@ class LoCoBenchEvaluator:
                 retrieved_context = ""
 
         # Build context section
-        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
-        if retrieved_context:
+        # If retrieval is disabled or not applicable, load full context files
+        if not retrieved_context:
+            # Load context files content when retrieval is not used
+            context_obj = scenario.get('context_files')
+            context_files_content = {}
+            
+            logger.debug(
+                "🔍 Loading context for scenario %s: context_obj type=%s, project_dir=%s, difficulty=%s",
+                scenario.get('id', 'unknown'),
+                type(context_obj).__name__,
+                project_dir,
+                difficulty,
+            )
+            
+            if isinstance(context_obj, dict):
+                # Context files are already provided as dict with content
+                context_files_content = {
+                    path: content for path, content in context_obj.items() if isinstance(content, str)
+                }
+                logger.debug("📋 Loaded %d files from dict context_files", len(context_files_content))
+                # For hard/expert: if we have project_dir, also load all project files
+                if should_load_all_files and project_dir and project_dir.exists():
+                    logger.info("📚 Loading additional project files for hard/expert scenario (non-retrieval mode)")
+                    all_project_files = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+                    # Merge with existing context files (project files take precedence if path matches)
+                    context_files_content.update(all_project_files)
+                    logger.debug("📚 Added %d additional project files", len(all_project_files))
+            elif isinstance(context_obj, list) and project_dir:
+                # Context files are provided as list of paths - load them
+                logger.debug("📋 Attempting to load %d files from list", len(context_obj))
+                context_files_content = load_context_files_from_scenario(
+                    scenario,
+                    project_dir=project_dir,
+                    include_all_project_files=should_load_all_files,
+                )
+                # If no files were loaded and we have project_dir, try loading all project files as fallback
+                if not context_files_content and project_dir.exists() and not should_load_all_files:
+                    logger.warning(
+                        "⚠️ No files found from context_files list, falling back to loading all project files for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+            elif context_obj is None or (isinstance(context_obj, list) and not project_dir):
+                # No context_files or no project_dir - try to load all project files if project_dir exists
+                if project_dir and project_dir.exists():
+                    logger.info(
+                        "📚 No context_files specified, loading all project files for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+            
+            # Format context files content
+            if context_files_content:
+                context_parts = []
+                total_context_length = 0
+                for path, content in context_files_content.items():
+                    context_parts.append(f"### {path}\n```\n{content}\n```")
+                    total_context_length += len(content)
+                
+                context_section = "**CONTEXT FILES**:\n\n" + "\n\n".join(context_parts)
+                logger.info(
+                    "📄 Loaded %d context files (%d chars) for %s scenario %s",
+                    len(context_files_content),
+                    total_context_length,
+                    difficulty,
+                    scenario.get('id', 'unknown'),
+                )
+            else:
+                # Fallback: just list file names if we can't load content
+                context_files_list = scenario.get('context_files', [])
+                if isinstance(context_files_list, dict):
+                    context_files_list = list(context_files_list.keys())
+                context_section = f"**CONTEXT FILES**: {', '.join(str(f) for f in context_files_list) if context_files_list else 'None'}"
+                logger.warning(
+                    "⚠️ No context files loaded for scenario %s (project_dir=%s, difficulty=%s, context_files type=%s)",
+                    scenario.get('id', 'unknown'),
+                    project_dir,
+                    difficulty,
+                    type(context_obj).__name__ if context_obj else 'None',
+                )
+        else:
+            # Use retrieved context when retrieval is enabled
             context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
 {retrieved_context}
 
@@ -2372,6 +2530,109 @@ class LoCoBenchEvaluator:
 - ✅ Response is complete (not truncated)
 
 Generate your response now:"""
+
+        # Check prompt size and trim context if needed
+        # Model limit: 31999 tokens, approximate conversion: 1 token ≈ 4 chars
+        # Leave ~5000 tokens (~20000 chars) for prompt overhead (instructions, task, etc.)
+        # So max context should be ~28000 tokens ≈ 112000 chars
+        MAX_PROMPT_TOKENS = 31999
+        TOKENS_PER_CHAR = 4  # Approximate conversion
+        PROMPT_OVERHEAD_TOKENS = 5000  # Reserve for prompt structure
+        MAX_CONTEXT_TOKENS = MAX_PROMPT_TOKENS - PROMPT_OVERHEAD_TOKENS
+        MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * TOKENS_PER_CHAR
+        
+        prompt_size_chars = len(solution_prompt)
+        prompt_size_tokens_approx = prompt_size_chars / TOKENS_PER_CHAR
+        
+        if prompt_size_tokens_approx > MAX_PROMPT_TOKENS:
+            logger.warning(
+                "⚠️ Prompt too large: %d chars (~%d tokens), max is %d tokens. Trimming context...",
+                prompt_size_chars,
+                int(prompt_size_tokens_approx),
+                MAX_PROMPT_TOKENS,
+            )
+            
+            # Calculate how much to trim from context_section
+            prompt_without_context = solution_prompt.replace(context_section, "")
+            overhead_size = len(prompt_without_context)
+            available_for_context = MAX_CONTEXT_CHARS - overhead_size
+            
+            if available_for_context > 0:
+                # Trim context_section to fit
+                if len(context_section) > available_for_context:
+                    # Try to preserve structure - trim from the end of file contents
+                    logger.info(
+                        "✂️ Trimming context from %d to %d chars",
+                        len(context_section),
+                        available_for_context,
+                    )
+                    
+                    # Simple truncation - keep header, trim content
+                    lines = context_section.split('\n')
+                    trimmed_lines = []
+                    current_size = 0
+                    for line in lines:
+                        line_size = len(line) + 1  # +1 for newline
+                        if current_size + line_size <= available_for_context:
+                            trimmed_lines.append(line)
+                            current_size += line_size
+                        else:
+                            # Add partial line if space allows
+                            remaining = available_for_context - current_size
+                            if remaining > 100:  # Only if meaningful space left
+                                trimmed_lines.append(line[:remaining] + "\n... [context truncated to fit model limits]")
+                            break
+                    
+                    context_section = '\n'.join(trimmed_lines)
+                    
+                    # Rebuild prompt with trimmed context
+                    solution_prompt = f"""You are an expert {config['engineer']}. Your task is to provide a complete, working solution.
+
+**TASK**: {scenario.get('title', 'Development Task')}
+
+**DESCRIPTION**: {scenario.get('description', '')}
+
+**REQUIREMENTS**: 
+{formatted_requirements}
+
+{context_section}
+
+**CRITICAL INSTRUCTIONS**:
+1. You MUST respond with valid JSON in the exact format shown below
+2. Each file MUST contain complete, syntactically correct {language.upper()} code
+3. Do NOT truncate your response - provide the complete solution
+4. Use {config['practices']}
+
+**REQUIRED RESPONSE FORMAT**:
+```json
+{{
+    "approach": "Your solution strategy (keep under 200 words)",
+    "files": {{
+{file_examples}
+    }},
+    "explanation": "Implementation details (keep under 300 words)"
+}}
+```
+
+**VALIDATION CHECKLIST**:
+- ✅ Response is valid JSON wrapped in ```json blocks
+- ✅ All strings are properly escaped (\\n for newlines, \\" for quotes)
+- ✅ Each file contains complete {language.upper()} code
+- ✅ Code compiles and addresses all requirements
+- ✅ Response is complete (not truncated)
+
+Generate your response now:"""
+                    
+                    logger.info(
+                        "✅ Trimmed prompt: %d chars (~%d tokens)",
+                        len(solution_prompt),
+                        int(len(solution_prompt) / TOKENS_PER_CHAR),
+                    )
+            else:
+                logger.error(
+                    "❌ Cannot fit prompt even without context! Overhead: %d chars",
+                    overhead_size,
+                )
 
         # Map model names to our generator keys  
         model_key_mapping = {
@@ -2781,9 +3042,17 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
                   max_concurrent_scenarios: int = 1) -> Dict[str, Any]:
     """Main evaluation function called by CLI"""
     
+    # Configure logging for retrieval module
+    retrieval_logger = logging.getLogger('locobench.retrieval')
+    retrieval_logger.setLevel(logging.INFO)
+    # Ensure retrieval logger has handlers (inherit from root logger if not set)
+    if not retrieval_logger.handlers:
+        retrieval_logger.addHandler(logging.StreamHandler())
+    
     async def _async_evaluation():
         # Load scenarios from Phase 3
         scenarios_dir = Path(config.data.output_dir) / "scenarios"
+        console.print(f"📁 Using directory: {scenarios_dir}")
         if not scenarios_dir.exists():
             raise FileNotFoundError("No scenarios found. Run Phase 3 first!")
         
@@ -2798,14 +3067,61 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
         if not all_scenarios:
             raise ValueError("No scenarios found in scenario files!")
         
+        # Create a temporary evaluator instance to use its filtering methods
+        temp_evaluator = LoCoBenchEvaluator(config)
+        
+        # Convert difficulty to list if specified
+        difficulty_levels = [difficulty] if difficulty else None
+        
+        # If retrieval is enabled and no explicit difficulty filter, auto-filter to retrieval difficulties
+        if config.retrieval.enabled and not difficulty_levels:
+            retrieval_difficulties = [d.lower() for d in config.retrieval.difficulties]
+            difficulty_levels = retrieval_difficulties
+            console.print(
+                f"🔍 Auto-filtering to retrieval difficulties: {retrieval_difficulties} "
+                f"(retrieval enabled but no explicit difficulty filter)"
+            )
+        
+        # Filter scenarios using the evaluator's method
+        filtered_scenarios = temp_evaluator._filter_scenarios(
+            all_scenarios, 
+            task_categories=categories,
+            difficulty_levels=difficulty_levels
+        )
+        
+        # Log difficulty distribution after filtering
+        if filtered_scenarios:
+            difficulty_counts = {}
+            for s in filtered_scenarios:
+                diff = s.get('difficulty', 'unknown').lower()
+                difficulty_counts[diff] = difficulty_counts.get(diff, 0) + 1
+            console.print(f"📊 Scenario difficulty distribution after filtering: {difficulty_counts}")
+            
+            # Warn if retrieval is enabled but we have scenarios outside retrieval difficulties
+            if config.retrieval.enabled:
+                retrieval_difficulties = [d.lower() for d in config.retrieval.difficulties]
+                non_retrieval_count = sum(
+                    count for diff, count in difficulty_counts.items() 
+                    if diff not in retrieval_difficulties
+                )
+                if non_retrieval_count > 0:
+                    console.print(
+                        f"⚠️  Warning: {non_retrieval_count} scenarios are not in retrieval difficulties {retrieval_difficulties}"
+                    )
+        
+        # Apply total_instances limit from config
+        total_instances = getattr(config.phase3, 'total_instances', len(filtered_scenarios))
+        if len(filtered_scenarios) > total_instances:
+            console.print(f"📦 Limiting scenarios from {len(filtered_scenarios)} to {total_instances} (phase3.total_instances)")
+            filtered_scenarios = filtered_scenarios[:total_instances]
+        else:
+            console.print(f"📦 Using {len(filtered_scenarios)} scenarios (phase3.total_instances = {total_instances})")
+        
         # Default models if none specified
         if not models:
             available_models = ['openai-o3', 'gemini-2.5-pro']
         else:
             available_models = list(models)
-        
-        # Convert difficulty to list if specified
-        difficulty_levels = [difficulty] if difficulty else None
         
         # For multiple models, evaluate each one separately with its own checkpoint
         all_results = {}
@@ -2818,7 +3134,7 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
             
             # Evaluate this model
             model_results = await evaluator.evaluate_models(
-                [model_name], all_scenarios, categories, difficulty_levels, 
+                [model_name], filtered_scenarios, categories, difficulty_levels, 
                 max_concurrent_scenarios=max_concurrent_scenarios, resume=resume
             )
             

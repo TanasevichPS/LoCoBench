@@ -1,130 +1,166 @@
+# LoCoBench Configuration File
+# Configuration for 4 Java projects: 2 hard + 2 expert scenarios
+
+# =============================================================================
+# GENERAL CONFIGURATION - API & System Settings
+# =============================================================================
+retrieval:
+  chunk_size: 512
+  difficulties:
+    - hard
+    - expert
+  enabled: true
+  top_percent: 0.20  # Increased from 0.05 to 0.20 (20% of files instead of 5%)
+  max_context_tokens: 100000  # Increased from 25000 to 100000 (~25K tokens, comparable to truncation)
+  method: embedding
+  model_name: all-MiniLM-L6-v2
+  local_model_path: null
+  top_k: 10  # Increased from 5 to 10 as fallback
+  smart_chunking: true  # Enable smart chunking: select most relevant chunks from files
+  chunks_per_file: 8  # Increased from 5 to 8 - more chunks per file for better coverage
+  retrieval_chunk_size: 2500  # Increased from 2000 to 2500 - larger chunks are more informative
+
 api:
-  default_model_google: gemini-2.5-pro
-  default_model_openai: o3
-  openai_base_url: null
-  openai_timeout: 60
-  custom_model_name: null
-  custom_model_base_url: null
-  custom_model_api_key: null
+  # API Keys (set via environment variables for security)
+  openai_api_key: "sk-bc454602c6df4e6a8e86b0fd2d978874"
+  openai_base_url: "http://lri-deepseek.rnd.huawei.com:8080/api/"
+  custom_model_name: "DeepSeekR1-70B-LRI"
+  openai_timeout: 600
+  custom_model_base_url: "http://lri-deepseek.rnd.huawei.com:8080/api/"
+  custom_model_api_key: "sk-bc454602c6df4e6a8e86b0fd2d978874"
   custom_model_temperature: 0.1
-  custom_model_max_tokens: 32000
+  custom_model_max_tokens: 1000000
   custom_model_timeout: 600
-  custom_model_client_timeout: 660
+  custom_model_client_timeout: 3600
   disable_proxy: false
-  max_concurrent_requests: 300
-  max_requests_per_minute: 600
+  
+  # Rate limiting settings
+  max_requests_per_minute: 1
+  max_concurrent_requests: 1
+  
+  # Default models
+  default_model_openai: "gpt-oss-120b"
+  default_model_google: "gemini-2.5-pro"
+
 data:
-  generated_dir: ./data/generated
-  output_dir: ./data/output
+  # Local storage directories
+  output_dir: "./data/output"
+  generated_dir: "./data/generated"
+
+# =============================================================================
+# PHASE 1 CONFIGURATION - Project Specification Generation
+# =============================================================================
+
 phase1:
-  complexity_distribution:
-    easy: 0.25
-    expert: 0.25
-    hard: 0.25
-    medium: 0.25
-  projects_per_language: 100
+  # Supported programming languages - Java only
   supported_languages:
-  - python
-  - cpp
-  - java
-  - c
-  - csharp
-  - javascript
-  - typescript
-  - go
-  - rust
-  - php
+    - java
+  
+  # Project generation distribution - 4 Java projects total
+  projects_per_language: 4
+  
+  # Complexity levels distribution for synthetic projects
+  complexity_distribution:
+    hard: 0.5     # 50% hard projects (2 projects)
+    expert: 0.5   # 50% expert projects (2 projects)
+
+# =============================================================================
+# PHASE 2 CONFIGURATION - Synthetic Codebase Generation  
+# =============================================================================
+
 phase2:
-  max_complexity_score: 1.0
-  max_files_per_project: 100
-  min_complexity_score: 0.3
-  min_documentation_ratio: 0.01
+  # File count constraints per project
   min_files_per_project: 10
+  max_files_per_project: 100
+  
+  # Generation quality controls (ENFORCED with retry logic)
+  min_complexity_score: 0.3
+  max_complexity_score: 1.0
+  min_documentation_ratio: 0.01
+
+# =============================================================================
+# PHASE 3 CONFIGURATION - Long-Context Evaluation Scenario Creation
+# =============================================================================
+
 phase3:
-  context_ranges:
-    easy:
-    - 10000
-    - 100000
-    expert:
-    - 500000
-    - 1000000
-    hard:
-    - 200000
-    - 500000
-    medium:
-    - 100000
-    - 200000
-  coverage_ranges:
-    easy:
-    - 0.2
-    - 0.4
-    expert:
-    - 0.8
-    - 1.0
-    hard:
-    - 0.6
-    - 0.8
-    medium:
-    - 0.4
-    - 0.6
-  difficulty_distribution:
-    easy: 2000
-    expert: 2000
-    hard: 2000
-    medium: 2000
-  min_information_coverage: 0.2
+  # Scale parameters - 4 scenarios total (1 per project)
+  total_instances: 4
+  
+  # Task category distribution (must sum to total_instances)
+  # Selected 4 categories, 1 scenario per category
   task_distribution:
-    architectural_understanding: 1000
-    bug_investigation: 1000
-    code_comprehension: 1000
-    cross_file_refactoring: 1000
-    feature_implementation: 1000
-    integration_testing: 1000
-    multi_session_development: 1000
-    security_analysis: 1000
-  total_instances: 8000
+    architectural_understanding: 1    # Deep architectural analysis
+    cross_file_refactoring: 1        # Multi-file code restructuring
+    feature_implementation: 1        # Complex feature development
+    bug_investigation: 1             # Real-world debugging scenarios
+  
+  # Difficulty distribution (must sum to total_instances)
+  difficulty_distribution:
+    easy: 0      # 10K-100K tokens 
+    medium: 0    # 100K-200K tokens
+    hard: 2      # 200K-500K tokens (2 scenarios)
+    expert: 2    # 500K-1000K tokens (2 scenarios)
+  
+  # Context length ranges (min_tokens, max_tokens)
+  context_ranges:
+    easy: [200000, 500000]
+    medium: [200000, 500000]
+    hard: [200000, 500000]
+    expert: [500000, 1000000]
+  
+  # Information coverage requirements (ENFORCED with retry logic)
+  min_information_coverage: 0.20
+  
+  # Coverage ranges that determine difficulty levels (RANGE-BASED)
+  coverage_ranges:
+    easy: [0.20, 0.40]
+    medium: [0.40, 0.60]
+    hard: [0.60, 0.80]
+    expert: [0.80, 1.00]
+
+# =============================================================================
+# PHASE 4 CONFIGURATION - Automated Validation & Evaluation
+# =============================================================================
+
 phase4:
-  longcontext_utilization_weights:
-    information_coverage: 0.5
-    multi_session_memory: 0.5
+  # Metric weights for LCBS (LoCoBench Score) - 4 Evaluation Dimensions
   metric_weights:
-    code_quality: 0.2
-    functional_correctness: 0.3
-    longcontext_utilization: 0.1
-    software_engineering: 0.4
-  score_thresholds:
-    excellent:
-      max: 5.0
-      min: 4.0
-    fair:
-      max: 3.0
-      min: 2.0
-    good:
-      max: 4.0
-      min: 3.0
-    poor:
-      max: 2.0
-      min: 0.0
-  session_timeout: 3600
+    software_engineering: 0.40       # Software Engineering Excellence (40% - 8 metrics)
+    functional_correctness: 0.30     # Functional Correctness (30% - 4 metrics)
+    code_quality: 0.20              # Code Quality Assessment (20% - 3 metrics)  
+    longcontext_utilization: 0.10   # Long-Context Utilization (10% - 2 metrics)
+  
+  # Software Engineering Excellence metric weights (within the 40% software_engineering category)
   software_engineering_weights:
     architectural_coherence: 0.125
-    comprehensiveness: 0.125
-    cross_file_reasoning: 0.125
     dependency_traversal: 0.125
-    innovation: 0.125
-    robustness: 0.125
-    solution_elegance: 0.125
+    cross_file_reasoning: 0.125
     system_thinking: 0.125
-  task_timeout: 1800
-  retrieval:
-    chunk_size: 512
-    difficulties:
-      - hard
-      - expert
-    enabled: true
-    top_percent: 0.05
-    max_context_tokens: 4096
-    method: embedding
-    model_name: all-MiniLM-L6-v2
-    local_model_path: null
-    top_k: 5
+    robustness: 0.125
+    comprehensiveness: 0.125
+    innovation: 0.125
+    solution_elegance: 0.125
+    
+  # Long-Context Utilization metric weights (within the 10% longcontext_utilization category)  
+  longcontext_utilization_weights:
+    information_coverage: 0.50
+    multi_session_memory: 0.50
+  
+  # Scoring thresholds (ENFORCED for pass/fail determination)
+  score_thresholds:
+    excellent:
+      min: 4.0
+      max: 5.0
+    good:
+      min: 3.0
+      max: 4.0
+    fair:
+      min: 2.0
+      max: 3.0
+    poor:
+      min: 0.0
+      max: 2.0
+  
+  # Timeout settings (seconds) - ENFORCED with asyncio.wait_for()
+  task_timeout: 1800      # 30 minutes per task
+  session_timeout: 3600   # 60 minutes per session

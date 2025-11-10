@@ -112,6 +112,88 @@ def split_code(code: str, chunk_size: int = 512) -> List[str]:
     return chunks
 
 
+def _split_file_into_chunks(
+    file_path: str,
+    file_content: str,
+    chunk_size: int = 1000,
+    overlap: int = 100,
+) -> List[Dict[str, Any]]:
+    """
+    Split a file into overlapping chunks with metadata.
+    
+    Args:
+        file_path: Path to the file
+        file_content: Full content of the file
+        chunk_size: Target size of each chunk in characters
+        overlap: Number of characters to overlap between chunks
+    
+    Returns:
+        List of chunk dictionaries with path, content, start_pos, end_pos, chunk_index
+    """
+    if not file_content:
+        return []
+    
+    chunks: List[Dict[str, Any]] = []
+    content_length = len(file_content)
+    
+    # For small files, return as single chunk
+    if content_length <= chunk_size:
+        return [{
+            "path": file_path,
+            "content": file_content,
+            "start_pos": 0,
+            "end_pos": content_length,
+            "chunk_index": 0,
+            "length": content_length,
+        }]
+    
+    # Split into overlapping chunks
+    start = 0
+    chunk_index = 0
+    
+    while start < content_length:
+        end = min(start + chunk_size, content_length)
+        chunk_content = file_content[start:end]
+        
+        chunks.append({
+            "path": file_path,
+            "content": chunk_content,
+            "start_pos": start,
+            "end_pos": end,
+            "chunk_index": chunk_index,
+            "length": len(chunk_content),
+        })
+        
+        chunk_index += 1
+        # Move start position with overlap
+        start = end - overlap if end < content_length else end
+    
+    return chunks
+
+
+def _rank_chunks_with_embeddings(
+    model: "SentenceTransformer",
+    task_prompt: str,
+    chunks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Rank code chunks using cosine similarity in embedding space."""
+    if not chunks:
+        return []
+    
+    texts = [task_prompt] + [chunk["content"] for chunk in chunks]
+    embeddings = model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
+    
+    query_embedding = embeddings[0]
+    chunk_embeddings = embeddings[1:]
+    
+    similarities = np.dot(chunk_embeddings, query_embedding)
+    
+    for idx, chunk in enumerate(chunks):
+        chunk["similarity"] = float(similarities[idx])
+    
+    return sorted(chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+
+
 def _normalize_relative_path(raw_path: str) -> str:
     """Normalise file paths to POSIX-style relative strings."""
     path = raw_path.replace("\\", "/")
@@ -324,8 +406,18 @@ def retrieve_relevant_embedding(
     max_context_tokens: Optional[int] = None,
     local_model_path: Optional[str] = None,
     top_k: Optional[int] = None,
+    smart_chunking: bool = True,
+    chunks_per_file: int = 5,
+    chunk_size: int = 2000,
 ) -> str:
-    """Retrieve the most relevant project files using embeddings and return them as context."""
+    """
+    Retrieve the most relevant project files using embeddings and return them as context.
+    
+    Args:
+        smart_chunking: If True, split files into chunks and select most relevant chunks
+        chunks_per_file: Maximum number of chunks to select per file (when smart_chunking=True)
+        chunk_size: Size of each chunk in characters (when smart_chunking=True)
+    """
     start_time = time.perf_counter()
 
     candidates = _prepare_candidate_files(context_files, project_dir)
@@ -345,38 +437,284 @@ def retrieve_relevant_embedding(
     else:
         selected_count = max(1, math.ceil(len(candidates) * top_percent))
     selected_count = min(selected_count, len(candidates))
+    
+    # Ensure we get at least top_k files if specified and it's larger than top_percent selection
+    if top_k and top_k > selected_count:
+        selected_count = min(top_k, len(candidates))
+    
+    logger.debug(
+        "Retrieval: selecting %d files from %d candidates (top_percent=%.2f, top_k=%s, smart_chunking=%s)",
+        selected_count,
+        len(candidates),
+        top_percent,
+        top_k,
+        smart_chunking,
+    )
 
     ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
     selected_files = ranked_files[:selected_count]
+    
+    # For architectural understanding, boost files that are architecturally important
+    # (interfaces, abstract classes, config files, main entry points)
+    if smart_chunking:
+        # Check if this might be an architectural task (heuristic based on prompt)
+        is_architectural_task = any(
+            keyword in task_prompt.lower() 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
+        )
+        
+        if is_architectural_task:
+            logger.debug("🏗️ Detected architectural task, boosting architectural files")
+            
+            # Boost files that are architecturally important
+            architectural_keywords = [
+                'interface', 'abstract', 'base', 'config', 'main', 'entry', 
+                'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
+                'controller', 'model', 'view', 'util', 'common', 'core', 'api'
+            ]
+            
+            for file_info in selected_files:
+                file_path_lower = file_info["path"].lower()
+                file_name_lower = Path(file_info["path"]).name.lower()
+                
+                # Boost similarity for architectural files
+                boost = 0.0
+                for keyword in architectural_keywords:
+                    if keyword in file_path_lower or keyword in file_name_lower:
+                        boost += 0.1
+                
+                # Also boost files with common architectural patterns in content
+                content_lower = file_info.get("content", "").lower()[:500]  # Check first 500 chars
+                if any(pattern in content_lower for pattern in ['interface ', 'abstract class', 'implements', 'extends']):
+                    boost += 0.15
+                
+                if boost > 0:
+                    original_sim = file_info.get("similarity", 0.0)
+                    file_info["similarity"] = min(1.0, original_sim + boost)
+                    logger.debug(
+                        "Boosted %s: %.3f -> %.3f (+%.3f)",
+                        file_info["path"],
+                        original_sim,
+                        file_info["similarity"],
+                        boost,
+                    )
+            
+            # Re-sort after boosting
+            selected_files = sorted(selected_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
 
-    trimmed_files, selected_length_total = _apply_length_budget(selected_files, max_context_tokens)
+    if smart_chunking:
+        # Split files into chunks and rank chunks by relevance
+        all_chunks: List[Dict[str, Any]] = []
+        
+        for file_info in selected_files:
+            file_chunks = _split_file_into_chunks(
+                file_info["path"],
+                file_info["content"],
+                chunk_size=chunk_size,
+                overlap=min(200, chunk_size // 10),  # 10% overlap or 200 chars, whichever is smaller
+            )
+            all_chunks.extend(file_chunks)
+        
+        logger.debug(
+            "Retrieval: split %d files into %d chunks (avg %.1f chunks/file)",
+            len(selected_files),
+            len(all_chunks),
+            len(all_chunks) / len(selected_files) if selected_files else 0,
+        )
+        
+        # Rank all chunks by relevance
+        ranked_chunks = _rank_chunks_with_embeddings(model, task_prompt, all_chunks)
+        
+        # Group chunks by file and select top chunks per file
+        chunks_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for chunk in ranked_chunks:
+            file_path = chunk["path"]
+            if file_path not in chunks_by_file:
+                chunks_by_file[file_path] = []
+            chunks_by_file[file_path].append(chunk)
+        
+        # Select top chunks per file with smart strategy:
+        # 1. Always include the first chunk (file header, imports, class definitions)
+        # 2. Then select most relevant chunks with diversification (spread across file)
+        # 3. For architectural tasks, prioritize beginning chunks (class/interface definitions)
+        selected_chunks: List[Dict[str, Any]] = []
+        is_architectural_task = any(
+            keyword in task_prompt.lower() 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
+        )
+        
+        for file_path, file_chunks in chunks_by_file.items():
+            # Sort chunks by position in file to find first chunk
+            file_chunks_sorted_by_pos = sorted(file_chunks, key=lambda c: c.get("chunk_index", 0))
+            first_chunk = file_chunks_sorted_by_pos[0] if file_chunks_sorted_by_pos else None
+            
+            # Sort by relevance
+            file_chunks_sorted_by_relevance = sorted(file_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+            
+            # Select chunks: always include first chunk, then diversify
+            top_chunks = []
+            if first_chunk:
+                top_chunks.append(first_chunk)
+            
+            # For architectural tasks, also prioritize first few chunks (class definitions)
+            if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
+                # Include first 2-3 chunks if they exist (usually contain class/interface definitions)
+                for i in range(1, min(3, len(file_chunks_sorted_by_pos))):
+                    early_chunk = file_chunks_sorted_by_pos[i]
+                    if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
+                        # Boost early chunks slightly for architectural understanding
+                        early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.05
+                        top_chunks.append(early_chunk)
+            
+            # Diversification strategy: select chunks from different parts of the file
+            # Divide file into regions and try to get at least one chunk from each region
+            if len(file_chunks_sorted_by_pos) > 1:
+                num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
+                if num_regions > 0:
+                    region_size = len(file_chunks_sorted_by_pos) // num_regions
+                    
+                    # Try to get one chunk from each region
+                    for region_idx in range(num_regions):
+                        region_start = region_idx * region_size
+                        region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
+                        region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
+                        
+                        # Find most relevant chunk in this region
+                        if region_chunks:
+                            region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+                            best_in_region = region_chunks_by_relevance[0]
+                            
+                            if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
+                                top_chunks.append(best_in_region)
+            
+            # Fill remaining slots with top relevant chunks
+            for chunk in file_chunks_sorted_by_relevance:
+                if len(top_chunks) >= chunks_per_file:
+                    break
+                if chunk not in top_chunks:
+                    top_chunks.append(chunk)
+            
+            selected_chunks.extend(top_chunks)
+            
+            logger.debug(
+                "File %s: selected %d chunks (first chunk: %s, early chunks: %d, diversification: %s, top similarity: %.3f)",
+                file_path,
+                len(top_chunks),
+                "yes" if first_chunk in top_chunks else "no",
+                sum(1 for c in top_chunks if c.get("chunk_index", 0) < 3),
+                "yes" if len(set(c.get("chunk_index", 0) for c in top_chunks)) > 2 else "no",
+                file_chunks_sorted_by_relevance[0].get("similarity", 0.0) if file_chunks_sorted_by_relevance else 0.0,
+            )
+        
+        # Re-rank selected chunks globally
+        selected_chunks = sorted(selected_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+        
+        # Apply length budget to chunks
+        trimmed_chunks, selected_length_total = _apply_length_budget(selected_chunks, max_context_tokens)
+        
+        # Group trimmed chunks back by file for formatting
+        final_chunks_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for chunk in trimmed_chunks:
+            file_path = chunk["path"]
+            if file_path not in final_chunks_by_file:
+                final_chunks_by_file[file_path] = []
+            final_chunks_by_file[file_path].append(chunk)
+        
+        # Format output with chunk information
+        parts: List[str] = []
+        for file_path in sorted(final_chunks_by_file.keys()):
+            file_chunks = final_chunks_by_file[file_path]
+            # Sort chunks by position in file
+            file_chunks.sort(key=lambda c: c.get("chunk_index", 0))
+            
+            # Calculate average similarity for this file
+            avg_similarity = sum(c.get("similarity", 0.0) for c in file_chunks) / len(file_chunks)
+            total_chars = sum(c.get("length", 0) for c in file_chunks)
+            
+            # Determine comment style based on file extension
+            file_ext = Path(file_path).suffix.lower()
+            if file_ext in {'.py', '.sh', '.rb', '.pl'}:
+                comment_prefix = '#'
+            elif file_ext in {'.java', '.js', '.ts', '.cpp', '.c', '.h', '.hpp', '.cs', '.go', '.rs', '.swift', '.kt'}:
+                comment_prefix = '//'
+            elif file_ext in {'.sql'}:
+                comment_prefix = '--'
+            else:
+                comment_prefix = '//'  # Default to // style
+            
+            # Build content from chunks (with markers)
+            chunk_contents = []
+            for i, chunk in enumerate(file_chunks):
+                chunk_idx = chunk.get("chunk_index", 0)
+                start_pos = chunk.get("start_pos", 0)
+                end_pos = chunk.get("end_pos", 0)
+                similarity = chunk.get("similarity", 0.0)
+                
+                # Add chunk marker as comment
+                chunk_marker = f"{comment_prefix} [Chunk {chunk_idx}: chars {start_pos}-{end_pos}, similarity: {similarity:.3f}]\n"
+                chunk_contents.append(chunk_marker + chunk["content"])
+                
+                # Add separator between chunks (except for the last one)
+                if i < len(file_chunks) - 1:
+                    chunk_contents.append(f"\n{comment_prefix} ... [continues] ...\n")
+            
+            header = f"### {file_path} (avg similarity: {avg_similarity:.3f}, {len(file_chunks)} chunks, {total_chars} chars)"
+            parts.append(f"{header}\n```\n{''.join(chunk_contents)}\n```")
+        
+        result = "\n\n".join(parts)
+        
+        duration = time.perf_counter() - start_time
+        reduction_pct = (
+            100.0 * (1.0 - (selected_length_total / original_length_total))
+            if original_length_total
+            else 0.0
+        )
+        
+        logger.info(
+            "Retrieval summary (smart chunking): project_dir=%s | files=%d | chunks=%d/%d | chars %d -> %d (Δ %.1f%%) | time %.2fs | max_context=%s",
+            project_dir,
+            len(final_chunks_by_file),
+            len(trimmed_chunks),
+            len(all_chunks),
+            original_length_total,
+            selected_length_total,
+            reduction_pct,
+            duration,
+            max_context_tokens if max_context_tokens else "unlimited",
+        )
+        
+        return result
+    else:
+        # Original behavior: use full files
+        trimmed_files, selected_length_total = _apply_length_budget(selected_files, max_context_tokens)
 
-    duration = time.perf_counter() - start_time
-    reduction_pct = (
-        100.0 * (1.0 - (selected_length_total / original_length_total))
-        if original_length_total
-        else 0.0
-    )
+        duration = time.perf_counter() - start_time
+        reduction_pct = (
+            100.0 * (1.0 - (selected_length_total / original_length_total))
+            if original_length_total
+            else 0.0
+        )
 
-    logger.info(
-        "Retrieval summary: project_dir=%s | candidates=%d | selected=%d | chars %d -> %d (Δ %.1f%%) | time %.2fs",
-        project_dir,
-        len(candidates),
-        len(trimmed_files),
-        original_length_total,
-        selected_length_total,
-        reduction_pct,
-        duration,
-    )
-    logger.debug(
-        "Selected files: %s",
-        [
-            f"{info['path']} (sim={info.get('similarity', 0.0):.3f}, chars={info['length']})"
-            for info in trimmed_files
-        ],
-    )
+        logger.info(
+            "Retrieval summary: project_dir=%s | candidates=%d | selected=%d | chars %d -> %d (Δ %.1f%%) | time %.2fs | max_context=%s",
+            project_dir,
+            len(candidates),
+            len(trimmed_files),
+            original_length_total,
+            selected_length_total,
+            reduction_pct,
+            duration,
+            max_context_tokens if max_context_tokens else "unlimited",
+        )
+        logger.debug(
+            "Selected files: %s",
+            [
+                f"{info['path']} (sim={info.get('similarity', 0.0):.3f}, chars={info['length']})"
+                for info in trimmed_files
+            ],
+        )
 
-    return _format_retrieved_context(trimmed_files)
+        return _format_retrieved_context(trimmed_files)
 
 
 def retrieve_relevant_keyword(
@@ -464,6 +802,9 @@ def retrieve_relevant(
     max_context_tokens: Optional[int] = None,
     local_model_path: Optional[str] = None,
     chunk_size: int = 512,
+    smart_chunking: bool = True,
+    chunks_per_file: int = 5,
+    retrieval_chunk_size: int = 2000,
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -476,6 +817,9 @@ def retrieve_relevant(
             max_context_tokens=max_context_tokens,
             local_model_path=local_model_path,
             top_k=top_k,
+            smart_chunking=smart_chunking,
+            chunks_per_file=chunks_per_file,
+            chunk_size=retrieval_chunk_size,
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")
