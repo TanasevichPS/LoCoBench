@@ -45,4 +45,11 @@ black>=23.0.0
 flake8>=6.0.0
 
 # Retrieval-Augmented Generation (RAG)
-sentence-transformers>=2.2.0 
+sentence-transformers>=2.2.0
+
+# Token counting (optional, for accurate OpenAI token counting)
+tiktoken>=0.5.0
+
+# Hugging Face models support
+transformers>=4.30.0
+torch>=2.0.0

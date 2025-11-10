@@ -7,6 +7,7 @@ on long-context development tasks using our automated validation framework.
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -2197,78 +2198,266 @@ class LoCoBenchEvaluator:
             formatted_requirements = str(task_prompt)
             task_prompt_text = str(task_prompt)
         
-        # Apply retrieval if enabled and scenario difficulty matches
-        retrieved_context = ""
+
+
+        # Get difficulty and retrieval config
         difficulty = scenario.get('difficulty', '').lower()
         retrieval_config = self.config.retrieval
+
+        def _resolve_project_dir_for_scenario() -> Optional[Path]:
+            metadata = scenario.get('metadata') or {}
+            project_path = metadata.get('project_path')
+            if project_path:
+                candidate = Path(project_path)
+                if candidate.exists():
+                    return candidate
+                candidate = Path(self.config.data.generated_dir) / project_path
+                if candidate.exists():
+                    return candidate
+
+            scenario_id = scenario.get('id', '')
+            generated_dir = Path(self.config.data.generated_dir)
+            if not scenario_id or not generated_dir.exists():
+                if not generated_dir.exists():
+                    logger.warning("⚠️ Generated directory does not exist: %s", generated_dir)
+                return None
+
+            task_categories = [tc.value for tc in TaskCategory]
+            base_id = None
+            for task_cat in task_categories:
+                marker = f"_{task_cat}_"
+                if marker in scenario_id:
+                    base_id = scenario_id.split(marker)[0]
+                    break
+
+            if base_id is None:
+                difficulties = [level.value for level in DifficultyLevel]
+                for diff in difficulties:
+                    marker = f"_{diff}_"
+                    if marker in scenario_id:
+                        base_id = scenario_id.split(marker)[0]
+                        break
+
+            if base_id is None:
+                parts = scenario_id.split('_')
+                if len(parts) >= 3:
+                    base_id = '_'.join(parts[:4])
+                else:
+                    base_id = scenario_id
+
+            base_dir = generated_dir / base_id
+            if base_dir.exists() and base_dir.is_dir():
+                subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
+                if len(subdirs) == 1:
+                    return subdirs[0]
+                if subdirs:
+                    return subdirs[0]
+                return base_dir
+
+            for folder in generated_dir.iterdir():
+                if not folder.is_dir():
+                    continue
+                if (
+                    folder.name == base_id
+                    or folder.name.startswith(base_id + '_')
+                    or base_id.startswith(folder.name + '_')
+                ):
+                    return folder
+
+            return None
+
+        # Resolve project directory (needed for both retrieval and non-retrieval cases)
+        project_dir: Optional[Path] = _resolve_project_dir_for_scenario()
+        if project_dir:
+            logger.debug("📁 Resolved project directory: %s", project_dir)
+        else:
+            logger.debug("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
+
+        # Determine if we should load all project files (for hard/expert scenarios)
+        difficulty = scenario.get('difficulty', '').lower()
+        should_load_all_files = difficulty in ['hard', 'expert']
         
+        retrieved_context = ""
         if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
             try:
-                logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
-                
-                # Try to load context files content
-                context_files_content = {}
-                context_files_list = scenario.get('context_files', [])
-                
-                if isinstance(context_files_list, dict):
-                    # Already a dict with contents
-                    context_files_content = context_files_list
-                elif isinstance(context_files_list, list):
-                    # Try to load from generated_dir based on scenario metadata
-                    scenario_id = scenario.get('id', '')
-                    metadata = scenario.get('metadata', {})
-                    
-                    # Try to find project directory
-                    project_dir = None
-                    if 'project_path' in metadata:
-                        project_dir = Path(metadata['project_path'])
-                    elif scenario_id:
-                        # Try to infer from scenario_id - look for project in generated_dir
-                        generated_dir = Path(self.config.data.generated_dir)
-                        if generated_dir.exists():
-                            # Search for project directories
-                            for project_folder in generated_dir.iterdir():
-                                if project_folder.is_dir():
-                                    project_dir = project_folder
-                                    break
-                    
-                    # Load files if we found project directory
-                    if project_dir and project_dir.exists():
-                        for file_path in context_files_list:
-                            file_full_path = project_dir / file_path
-                            if file_full_path.exists():
-                                try:
-                                    with open(file_full_path, 'r', encoding='utf-8') as f:
-                                        context_files_content[file_path] = f.read()
-                                except Exception as e:
-                                    logger.warning(f"Failed to load context file {file_path}: {e}")
-                            else:
-                                logger.warning(f"Context file not found: {file_full_path}")
-                
-                if context_files_content:
-                    # Perform retrieval
-                    retrieved_context = retrieve_relevant(
-                        context_files_content,
-                        task_prompt_text,
-                        top_k=retrieval_config.top_k,
-                        method=retrieval_config.method,
-                        model_name=retrieval_config.model_name
-                    )
-                    
-                    if retrieved_context:
-                        logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
-                    else:
-                        logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
+                logger.info("🔍 Applying retrieval for %s scenario: %s", difficulty, scenario.get('id', 'unknown'))
+
+                if project_dir:
+                    logger.info("📁 Using project directory for retrieval: %s", project_dir)
                 else:
-                    logger.warning(f"⚠️ Could not load context files for retrieval in scenario {scenario.get('id', 'unknown')}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Error during retrieval for scenario {scenario.get('id', 'unknown')}: {e}", exc_info=True)
-                # Fallback: continue without retrieval
-        
+                    logger.warning("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
+
+                context_obj = scenario.get('context_files')
+                if isinstance(context_obj, dict):
+                    # Context files already provided as dict with content
+                    context_files_content = {
+                        path: content for path, content in context_obj.items() if isinstance(content, str)
+                    }
+                    # For hard/expert: if we have project_dir, also load all project files for retrieval
+                    if should_load_all_files and project_dir and project_dir.exists():
+                        logger.info("📚 Loading additional project files for hard/expert scenario")
+                        all_project_files = load_context_files_from_scenario(
+                            scenario,
+                            project_dir=project_dir,
+                            include_all_project_files=True,
+                        )
+                        # Merge with existing context files (project files take precedence if path matches)
+                        context_files_content.update(all_project_files)
+                elif isinstance(context_obj, list) and project_dir:
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=should_load_all_files,
+                    )
+                    # If no files were loaded, try loading all project files as fallback
+                    if not context_files_content and project_dir.exists():
+                        logger.warning(
+                            "⚠️ No files found from context_files list, falling back to loading all project files for retrieval"
+                        )
+                        context_files_content = load_context_files_from_scenario(
+                            scenario,
+                            project_dir=project_dir,
+                            include_all_project_files=True,
+                        )
+                elif (context_obj is None or (isinstance(context_obj, list) and not project_dir)) and project_dir and project_dir.exists():
+                    # No context_files or no project_dir - try to load all project files
+                    logger.info("📚 No context_files specified, loading all project files for retrieval")
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+                else:
+                    context_files_content = {}
+
+                retrieved_context = retrieve_relevant(
+                    context_files_content,
+                    task_prompt_text,
+                    top_k=retrieval_config.top_k,
+                    method=retrieval_config.method,
+                    model_name=retrieval_config.model_name,
+                    project_dir=project_dir,
+                    top_percent=retrieval_config.top_percent,
+                    max_context_tokens=retrieval_config.max_context_tokens,
+                    local_model_path=retrieval_config.local_model_path,
+                    chunk_size=retrieval_config.chunk_size,
+                )
+
+                if retrieved_context:
+                    logger.info(
+                        "✅ Retrieval produced context of %d characters for scenario %s",
+                        len(retrieved_context),
+                        scenario.get('id', 'unknown'),
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ Retrieval returned empty result for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+            except Exception as exc:
+                logger.error(
+                    "❌ Error during retrieval for scenario %s: %s",
+                    scenario.get('id', 'unknown'),
+                    exc,
+                    exc_info=True,
+                )
+                retrieved_context = ""
+
         # Build context section
-        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
-        if retrieved_context:
+        # If retrieval is disabled or not applicable, load full context files
+        if not retrieved_context:
+            # Load context files content when retrieval is not used
+            context_obj = scenario.get('context_files')
+            context_files_content = {}
+            
+            logger.debug(
+                "🔍 Loading context for scenario %s: context_obj type=%s, project_dir=%s, difficulty=%s",
+                scenario.get('id', 'unknown'),
+                type(context_obj).__name__,
+                project_dir,
+                difficulty,
+            )
+            
+            if isinstance(context_obj, dict):
+                # Context files are already provided as dict with content
+                context_files_content = {
+                    path: content for path, content in context_obj.items() if isinstance(content, str)
+                }
+                logger.debug("📋 Loaded %d files from dict context_files", len(context_files_content))
+                # For hard/expert: if we have project_dir, also load all project files
+                if should_load_all_files and project_dir and project_dir.exists():
+                    logger.info("📚 Loading additional project files for hard/expert scenario (non-retrieval mode)")
+                    all_project_files = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+                    # Merge with existing context files (project files take precedence if path matches)
+                    context_files_content.update(all_project_files)
+                    logger.debug("📚 Added %d additional project files", len(all_project_files))
+            elif isinstance(context_obj, list) and project_dir:
+                # Context files are provided as list of paths - load them
+                logger.debug("📋 Attempting to load %d files from list", len(context_obj))
+                context_files_content = load_context_files_from_scenario(
+                    scenario,
+                    project_dir=project_dir,
+                    include_all_project_files=should_load_all_files,
+                )
+                # If no files were loaded and we have project_dir, try loading all project files as fallback
+                if not context_files_content and project_dir.exists() and not should_load_all_files:
+                    logger.warning(
+                        "⚠️ No files found from context_files list, falling back to loading all project files for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+            elif context_obj is None or (isinstance(context_obj, list) and not project_dir):
+                # No context_files or no project_dir - try to load all project files if project_dir exists
+                if project_dir and project_dir.exists():
+                    logger.info(
+                        "📚 No context_files specified, loading all project files for scenario %s",
+                        scenario.get('id', 'unknown'),
+                    )
+                    context_files_content = load_context_files_from_scenario(
+                        scenario,
+                        project_dir=project_dir,
+                        include_all_project_files=True,
+                    )
+            
+            # Format context files content
+            if context_files_content:
+                context_parts = []
+                total_context_length = 0
+                for path, content in context_files_content.items():
+                    context_parts.append(f"### {path}\n```\n{content}\n```")
+                    total_context_length += len(content)
+                
+                context_section = "**CONTEXT FILES**:\n\n" + "\n\n".join(context_parts)
+                logger.info(
+                    "📄 Loaded %d context files (%d chars) for %s scenario %s",
+                    len(context_files_content),
+                    total_context_length,
+                    difficulty,
+                    scenario.get('id', 'unknown'),
+                )
+            else:
+                # Fallback: just list file names if we can't load content
+                context_files_list = scenario.get('context_files', [])
+                if isinstance(context_files_list, dict):
+                    context_files_list = list(context_files_list.keys())
+                context_section = f"**CONTEXT FILES**: {', '.join(str(f) for f in context_files_list) if context_files_list else 'None'}"
+                logger.warning(
+                    "⚠️ No context files loaded for scenario %s (project_dir=%s, difficulty=%s, context_files type=%s)",
+                    scenario.get('id', 'unknown'),
+                    project_dir,
+                    difficulty,
+                    type(context_obj).__name__ if context_obj else 'None',
+                )
+        else:
+            # Use retrieved context when retrieval is enabled
             context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
 {retrieved_context}
 
@@ -2325,6 +2514,7 @@ Generate your response now:"""
             'gpt-5-mini': 'openai',
             'gpt-5-nano': 'openai',
             'gpt-5-chat-latest': 'openai',
+            'custom': 'custom',
             
             # GPT-4.1 series
             'gpt-4.1': 'openai',
@@ -2401,6 +2591,18 @@ Generate your response now:"""
             'claude-opus-4': 'claude-opus-4',              # High capability
             'claude-sonnet-3.7': 'claude-sonnet-3.7',      # Hybrid reasoning
             
+            # === Hugging Face Models ===
+            # Code generation models
+            'deepseek-coder': 'deepseek-ai/deepseek-coder-1.3b-instruct',  # Small code model
+            'deepseek-coder-1.3b': 'deepseek-ai/deepseek-coder-1.3b-instruct',
+            'deepseek-coder-6.7b': 'deepseek-ai/deepseek-coder-6.7b-instruct',
+            'qwen-coder': 'Qwen/Qwen2.5-Coder-1.5B-Instruct',  # Small code model
+            'qwen-coder-1.5b': 'Qwen/Qwen2.5-Coder-1.5B-Instruct',
+            'qwen-coder-7b': 'Qwen/Qwen2.5-Coder-7B-Instruct',
+            'codebert': 'microsoft/CodeBERT-base',
+            'starcoder': 'bigcode/starcoder',
+            'codellama': 'codellama/CodeLlama-7b-hf',
+            
             # Note: Excluding audio/video/TTS-only models as they're not suitable for code evaluation:
             # - gpt-4o-audio-preview, gpt-4o-realtime-preview (audio focus)
             # - gpt-4o-mini-audio-preview, gpt-4o-mini-realtime-preview (audio focus)
@@ -2416,12 +2618,24 @@ Generate your response now:"""
             logger.warning(f"Model name is not a string: {type(model_name)} = {model_name}")
             model_name = str(model_name)
         
-        model_key = model_key_mapping.get(model_name.lower(), 'openai')
+        normalized_model_name = model_name.lower()
+
+        if normalized_model_name.startswith('custom:'):
+            model_key = model_name  # Preserve original casing for downstream logging
+        elif normalized_model_name == 'custom':
+            model_key = 'custom'
+        elif '/' in model_name and normalized_model_name not in model_key_mapping:
+            # Treat as Hugging Face model directly
+            model_key = model_name
+        else:
+            model_key = model_key_mapping.get(normalized_model_name, 'openai')
         
         # Retry logic for empty responses
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                logger.info("📊 Prompt length: %d chars", len(solution_prompt))
+                
                 # For evaluation, use the specific model name instead of default config
                 if model_key == 'openai':
                     # Temporarily override the default model for this evaluation
@@ -2437,6 +2651,17 @@ Generate your response now:"""
                     response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
                     # Restore original model
                     self.llm_generator.config.api.default_model_google = original_model
+                elif model_key == 'custom' or model_key.startswith('custom:'):
+                    target_display = None
+                    if ':' in model_key:
+                        target_display = model_key.split(':', 1)[1] or None
+                    if not target_display:
+                        target_display = self.llm_generator.config.api.custom_model_name or model_name
+                    logger.info(f"⚙️ Calling custom model: {target_display}")
+                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                elif '/' in model_key or model_key.startswith('huggingface:') or model_key.startswith('hf:'):
+                    # Hugging Face model - use directly
+                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
                 else:
                     response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
                 
@@ -2495,6 +2720,12 @@ Generate your response now:"""
         """Filter scenarios based on criteria"""
         
         filtered = scenarios
+        supported_languages = self.config.phase1.supported_languages
+        
+        # Если используем RAG - не фильтруем по языку, иначе применяем фильтр
+        if supported_languages:
+            filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
+            logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
         
         if task_categories:
             filtered = [s for s in filtered if s.get('task_category') in task_categories]
@@ -2503,6 +2734,33 @@ Generate your response now:"""
             filtered = [s for s in filtered if s.get('difficulty') in difficulty_levels]
         
         return filtered
+
+    def _get_scenario_language(self, scenario: Dict[str, Any]) -> str:
+        """Extract language from scenario ID"""
+        scenario_id = scenario.get('id', '')
+        if not scenario_id:
+            return 'unknown'
+
+        parts = scenario_id.split('_')
+        if not parts:
+            return 'unknown'
+        
+        language = parts[0].lower()
+
+        language_mapping = {
+            'c': 'c',
+            'cpp': 'cpp', 
+            'cs': 'csharp', 'csharp': 'csharp',
+            'go': 'go',
+            'java': 'java',
+            'js': 'javascript', 'javascript': 'javascript',
+            'php': 'php',
+            'py': 'python', 'python': 'python',
+            'rs': 'rust', 'rust': 'rust',
+            'ts': 'typescript', 'typescript': 'typescript'
+        }
+        
+        return language_mapping.get(language, language)
 
     def _get_letter_grade(self, score: float) -> str:
         """Convert numeric score to letter grade using config thresholds"""
@@ -2652,9 +2910,17 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
                   max_concurrent_scenarios: int = 1) -> Dict[str, Any]:
     """Main evaluation function called by CLI"""
     
+    # Configure logging for retrieval module
+    retrieval_logger = logging.getLogger('locobench.retrieval')
+    retrieval_logger.setLevel(logging.INFO)
+    # Ensure retrieval logger has handlers (inherit from root logger if not set)
+    if not retrieval_logger.handlers:
+        retrieval_logger.addHandler(logging.StreamHandler())
+    
     async def _async_evaluation():
         # Load scenarios from Phase 3
         scenarios_dir = Path(config.data.output_dir) / "scenarios"
+        console.print(f"📁 Using directory: {scenarios_dir}")
         if not scenarios_dir.exists():
             raise FileNotFoundError("No scenarios found. Run Phase 3 first!")
         
@@ -2669,14 +2935,61 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
         if not all_scenarios:
             raise ValueError("No scenarios found in scenario files!")
         
+        # Create a temporary evaluator instance to use its filtering methods
+        temp_evaluator = LoCoBenchEvaluator(config)
+        
+        # Convert difficulty to list if specified
+        difficulty_levels = [difficulty] if difficulty else None
+        
+        # If retrieval is enabled and no explicit difficulty filter, auto-filter to retrieval difficulties
+        if config.retrieval.enabled and not difficulty_levels:
+            retrieval_difficulties = [d.lower() for d in config.retrieval.difficulties]
+            difficulty_levels = retrieval_difficulties
+            console.print(
+                f"🔍 Auto-filtering to retrieval difficulties: {retrieval_difficulties} "
+                f"(retrieval enabled but no explicit difficulty filter)"
+            )
+        
+        # Filter scenarios using the evaluator's method
+        filtered_scenarios = temp_evaluator._filter_scenarios(
+            all_scenarios, 
+            task_categories=categories,
+            difficulty_levels=difficulty_levels
+        )
+        
+        # Log difficulty distribution after filtering
+        if filtered_scenarios:
+            difficulty_counts = {}
+            for s in filtered_scenarios:
+                diff = s.get('difficulty', 'unknown').lower()
+                difficulty_counts[diff] = difficulty_counts.get(diff, 0) + 1
+            console.print(f"📊 Scenario difficulty distribution after filtering: {difficulty_counts}")
+            
+            # Warn if retrieval is enabled but we have scenarios outside retrieval difficulties
+            if config.retrieval.enabled:
+                retrieval_difficulties = [d.lower() for d in config.retrieval.difficulties]
+                non_retrieval_count = sum(
+                    count for diff, count in difficulty_counts.items() 
+                    if diff not in retrieval_difficulties
+                )
+                if non_retrieval_count > 0:
+                    console.print(
+                        f"⚠️  Warning: {non_retrieval_count} scenarios are not in retrieval difficulties {retrieval_difficulties}"
+                    )
+        
+        # Apply total_instances limit from config
+        total_instances = getattr(config.phase3, 'total_instances', len(filtered_scenarios))
+        if len(filtered_scenarios) > total_instances:
+            console.print(f"📦 Limiting scenarios from {len(filtered_scenarios)} to {total_instances} (phase3.total_instances)")
+            filtered_scenarios = filtered_scenarios[:total_instances]
+        else:
+            console.print(f"📦 Using {len(filtered_scenarios)} scenarios (phase3.total_instances = {total_instances})")
+        
         # Default models if none specified
         if not models:
             available_models = ['openai-o3', 'gemini-2.5-pro']
         else:
             available_models = list(models)
-        
-        # Convert difficulty to list if specified
-        difficulty_levels = [difficulty] if difficulty else None
         
         # For multiple models, evaluate each one separately with its own checkpoint
         all_results = {}
@@ -2689,7 +3002,7 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
             
             # Evaluate this model
             model_results = await evaluator.evaluate_models(
-                [model_name], all_scenarios, categories, difficulty_levels, 
+                [model_name], filtered_scenarios, categories, difficulty_levels, 
                 max_concurrent_scenarios=max_concurrent_scenarios, resume=resume
             )
             

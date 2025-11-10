@@ -13,10 +13,21 @@ from dataclasses import dataclass, field
 class APIConfig:
     """Configuration for LLM APIs"""
     openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_timeout: float = 60.0
     google_api_key: Optional[str] = None
     huggingface_token: Optional[str] = None
     # Claude Bearer Token Authentication (replaces AWS credentials)
     claude_bearer_token: Optional[str] = None
+    # Custom model support (OpenAI-compatible APIs)
+    custom_model_name: Optional[str] = None
+    custom_model_base_url: Optional[str] = None
+    custom_model_api_key: Optional[str] = None
+    custom_model_temperature: float = 0.1
+    custom_model_max_tokens: int = 32000
+    custom_model_timeout: float = 600.0
+    custom_model_client_timeout: float = 660.0
+    disable_proxy: bool = False
     
     # Rate limiting settings 
     max_requests_per_minute: int = 1000
@@ -130,6 +141,9 @@ class RetrievalConfig:
     # Number of top-K fragments to retrieve
     top_k: int = 5
     
+    # Fraction of project files to include (e.g. 0.05 = top 5%)
+    top_percent: float = 0.05
+    
     # Retrieval method: 'embedding' or 'keyword'
     method: str = "embedding"
     
@@ -138,6 +152,12 @@ class RetrievalConfig:
     
     # Chunk size for code splitting (characters)
     chunk_size: int = 512
+
+    # Upper bound on the retrieval context length (in characters)
+    max_context_tokens: int = 4096
+
+    # Optional local path to embedding model (SentenceTransformer) to avoid downloads
+    local_model_path: Optional[str] = None
 
 
 @dataclass
@@ -212,12 +232,45 @@ class Config:
             yaml_data = yaml.safe_load(f)
         
         # Extract environment variables for API keys
-        api_config = yaml_data.get('api', {})
-        api_config['openai_api_key'] = os.getenv('OPENAI_API_KEY')
-        api_config['google_api_key'] = os.getenv('GEMINI_API_KEY')  # Using GEMINI_API_KEY as set in api.sh
-        api_config['huggingface_token'] = os.getenv('HUGGINGFACE_TOKEN')
-        # Claude Bearer Token Authentication (replaces AWS credentials)
-        api_config['claude_bearer_token'] = os.getenv('CLAUDE_BEARER_TOKEN')
+        api_config = yaml_data.get('api', {}).copy()
+
+        def _apply_env(var_name: str, key: str, cast=None):
+            value = os.getenv(var_name)
+            if value is None:
+                return
+            if cast is not None:
+                try:
+                    value = cast(value)
+                except ValueError:
+                    # Keep original string if cast fails; validation can surface issue later
+                    pass
+            api_config[key] = value
+
+        _apply_env('OPENAI_API_KEY', 'openai_api_key')
+        _apply_env('OPENAI_BASE_URL', 'openai_base_url')
+        _apply_env('OPENAI_TIMEOUT', 'openai_timeout', float)
+        _apply_env('GEMINI_API_KEY', 'google_api_key')  # Using GEMINI_API_KEY as set in api.sh
+        _apply_env('HUGGINGFACE_TOKEN', 'huggingface_token')
+        _apply_env('CLAUDE_BEARER_TOKEN', 'claude_bearer_token')
+
+        # Custom model overrides via environment
+        _apply_env('CUSTOM_MODEL_NAME', 'custom_model_name')
+        _apply_env('CUSTOM_MODEL_BASE_URL', 'custom_model_base_url')
+        _apply_env('CUSTOM_MODEL_API_KEY', 'custom_model_api_key')
+        _apply_env('CUSTOM_MODEL_TEMPERATURE', 'custom_model_temperature', float)
+        _apply_env('CUSTOM_MODEL_MAX_TOKENS', 'custom_model_max_tokens', int)
+        _apply_env('CUSTOM_MODEL_TIMEOUT', 'custom_model_timeout', float)
+        _apply_env('CUSTOM_MODEL_CLIENT_TIMEOUT', 'custom_model_client_timeout', float)
+
+        # Allow OPENAI_* env vars to override custom model defaults if dedicated vars not provided
+        if 'custom_model_base_url' not in api_config and api_config.get('openai_base_url'):
+            api_config['custom_model_base_url'] = api_config['openai_base_url']
+        if 'custom_model_api_key' not in api_config and api_config.get('openai_api_key'):
+            api_config['custom_model_api_key'] = api_config['openai_api_key']
+
+        disable_proxy_env = os.getenv('OPENAI_DISABLE_PROXY')
+        if disable_proxy_env is not None:
+            api_config['disable_proxy'] = disable_proxy_env.lower() in {'1', 'true', 'yes', 'on'}
         
         return cls(
             api=APIConfig(**api_config),

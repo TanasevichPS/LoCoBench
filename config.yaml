@@ -1,24 +1,43 @@
 # LoCoBench Configuration File
-# PRODUCTION FULL-SCALE CONFIGURATION
-# Organized by pipeline phases for better understanding
+# Configuration for 4 Java projects: 2 hard + 2 expert scenarios
 
 # =============================================================================
 # GENERAL CONFIGURATION - API & System Settings
 # =============================================================================
+retrieval:
+  chunk_size: 512
+  difficulties:
+    - hard
+    - expert
+  enabled: true
+  top_percent: 0.05
+  max_context_tokens: 2048
+  method: embedding
+  model_name: all-MiniLM-L6-v2
+  local_model_path: null
+  top_k: 5
 
 api:
   # API Keys (set via environment variables for security)
-  # openai_api_key: "your-openai-key-here"
-  # google_api_key: "your-google-key-here"
-  # huggingface_token: "your-hf-token-here"
+  openai_api_key: "
+  openai_base_url: 
+  custom_model_name: "DeepSeekR1-70B-LRI"
+  openai_timeout: 600
+  custom_model_base_url:
+  custom_model_api_key:
+  custom_model_temperature: 0.1
+  custom_model_max_tokens: 1000000
+  custom_model_timeout: 600
+  custom_model_client_timeout: 3600
+  disable_proxy: false
   
-  # Rate limiting settings (optimized for production + 3 simultaneous Claude models)
-  max_requests_per_minute: 600
-  max_concurrent_requests: 300  # Increased to support 3x Claude models running simultaneously
+  # Rate limiting settings
+  max_requests_per_minute: 1
+  max_concurrent_requests: 1
   
-  # Default models - 🏆 2 Elite Models
-  default_model_openai: "o3"                                  # ✅ Elite: OpenAI o3 (reasoning model)
-  default_model_google: "gemini-2.5-pro"                      # ✅ Elite: Gemini 2.5 Pro (1M+ tokens)
+  # Default models
+  default_model_openai: "gpt-oss-120b"
+  default_model_google: "gemini-2.5-pro"
 
 data:
   # Local storage directories
@@ -30,28 +49,17 @@ data:
 # =============================================================================
 
 phase1:
-  # Supported programming languages (optimized for long-context software development)
+  # Supported programming languages - Java only
   supported_languages:
-    - python      # #1: AI/ML dominance (23.88%, +8.72% growth)
-    - cpp         # #2: High-performance, games, systems (11.37%, +0.84% growth)  
-    - java        # #3: Enterprise, Android (10.66%, +1.79% growth)
-    - c           # #4: Systems programming (9.84%, declining but essential)
-    - csharp      # #5: Enterprise, Windows (.NET) (4.12%, Microsoft ecosystem)
-    - javascript  # #6: Web standard, frontend/backend (3.78%, +0.61% growth)
-    - typescript  # JS ecosystem: Enterprise web, type safety (75% of React projects)
-    - go          # #8: Cloud-native, microservices (2.26%, +0.53% growth)
-    - rust        # #13: Systems, security, performance (1.47%, +0.42% growth)
-    - php         # #14: Web development, still widely used (1.14%, legacy but prevalent)
+    - java
   
-  # Project generation distribution (OPTIMIZED FOR 10 LANGUAGES)
-  projects_per_language: 100  # OPTIMAL: 10 languages × 100 = 1,000 total projects
+  # Project generation distribution - 4 Java projects total
+  projects_per_language: 4
   
   # Complexity levels distribution for synthetic projects
   complexity_distribution:
-    easy: 0.25      # 25% easy projects
-    medium: 0.25    # 25% medium projects
-    hard: 0.25     # 25% hard projects
-    expert: 0.25    # 25% expert projects
+    hard: 0.5     # 50% hard projects (2 projects)
+    expert: 0.5   # 50% expert projects (2 projects)
 
 # =============================================================================
 # PHASE 2 CONFIGURATION - Synthetic Codebase Generation  
@@ -65,109 +73,75 @@ phase2:
   # Generation quality controls (ENFORCED with retry logic)
   min_complexity_score: 0.3
   max_complexity_score: 1.0
-  min_documentation_ratio: 0.01  # Lowered from 0.1 to match realistic generation
+  min_documentation_ratio: 0.01
 
 # =============================================================================
 # PHASE 3 CONFIGURATION - Long-Context Evaluation Scenario Creation
 # =============================================================================
 
 phase3:
-  # Scale parameters (OPTIMIZED FOR 10 LANGUAGES)
-  total_instances: 8000  # 1,000 projects × 8 categories = 8,000 evaluation scenarios
+  # Scale parameters - 4 scenarios total (1 per project)
+  total_instances: 4
   
   # Task category distribution (must sum to total_instances)
+  # Selected 4 categories, 1 scenario per category
   task_distribution:
-    architectural_understanding: 1000    # Deep architectural analysis
-    cross_file_refactoring: 1000        # Multi-file code restructuring
-    feature_implementation: 1000        # Complex feature development
-    bug_investigation: 1000             # Real-world debugging scenarios
-    multi_session_development: 1000     # Long-term development projects
-    code_comprehension: 1000            # Large codebase understanding
-    integration_testing: 1000           # System integration validation
-    security_analysis: 1000             # Security vulnerability assessment
+    architectural_understanding: 1    # Deep architectural analysis
+    cross_file_refactoring: 1        # Multi-file code restructuring
+    feature_implementation: 1        # Complex feature development
+    bug_investigation: 1             # Real-world debugging scenarios
   
   # Difficulty distribution (must sum to total_instances)
   difficulty_distribution:
-    easy: 2000      # 10K-100K tokens 
-    medium: 2000    # 100K-200K tokens
-    hard: 2000      # 200K-500K tokens 
-    expert: 2000    # 500K-1000K tokens 
+    easy: 0      # 10K-100K tokens 
+    medium: 0    # 100K-200K tokens
+    hard: 2      # 200K-500K tokens (2 scenarios)
+    expert: 2    # 500K-1000K tokens (2 scenarios)
   
-  # Context length ranges (min_tokens, max_tokens) - PRODUCTION SCALE
+  # Context length ranges (min_tokens, max_tokens)
   context_ranges:
-    easy: [10000, 100000]       # Small to medium codebases
-    medium: [100000, 200000]    # Medium to large codebases
-    hard: [200000, 500000]     # Large enterprise codebases
-    expert: [500000, 1000000]   # Massive enterprise systems
+    easy: [200000, 500000]
+    medium: [200000, 500000]
+    hard: [200000, 500000]
+    expert: [500000, 1000000]
   
   # Information coverage requirements (ENFORCED with retry logic)
-  min_information_coverage: 0.20  # Global minimum for any scenario (matches easy range)
+  min_information_coverage: 0.20
   
   # Coverage ranges that determine difficulty levels (RANGE-BASED)
   coverage_ranges:
-    easy: [0.20, 0.40]     # 20-40% coverage = easy difficulty
-    medium: [0.40, 0.60]   # 40-60% coverage = medium difficulty  
-    hard: [0.60, 0.80]     # 60-80% coverage = hard difficulty
-    expert: [0.80, 1.00]   # 80-100% coverage = expert difficulty
+    easy: [0.20, 0.40]
+    medium: [0.40, 0.60]
+    hard: [0.60, 0.80]
+    expert: [0.80, 1.00]
 
 # =============================================================================
 # PHASE 4 CONFIGURATION - Automated Validation & Evaluation
 # =============================================================================
 
 phase4:
-  # ======================================================================
-  # COMPREHENSIVE LONG-CONTEXT EVALUATION SYSTEM 
-  # ======================================================================
-      # 🏗️ Software Engineering Excellence (8 metrics): Core long-context capabilities
-  # 🛡️ Software Engineering Excellence (5 metrics): Advanced development practices
-  # ⚙️ Functional Correctness (3 metrics): Code compilation and testing  
-  # 🔍 Code Quality Assessment (3 metrics): Static analysis and security
-  
   # Metric weights for LCBS (LoCoBench Score) - 4 Evaluation Dimensions
-  # LCBS = 5.0 × (0.40×SE + 0.30×FC + 0.20×CQ + 0.10×LCU)
-  # Comprehensive evaluation across 4 dimensions with 17 metrics total
   metric_weights:
-    software_engineering: 0.40       # 🏗️ Software Engineering Excellence (40% - 8 metrics)
-    functional_correctness: 0.30     # ⚙️ Functional Correctness (30% - 4 metrics)
-    code_quality: 0.20              # 🔍 Code Quality Assessment (20% - 3 metrics)  
-    longcontext_utilization: 0.10   # 🧠 Long-Context Utilization (10% - 2 metrics)
-    # Total: 0.40 + 0.30 + 0.20 + 0.10 = 1.00
-    
-  # Historical note: Previous weights were functional:40%, software_engineering:30%, quality:20%, style:10%
-  # Current weights provide better balance between functional correctness and engineering quality
+    software_engineering: 0.40       # Software Engineering Excellence (40% - 8 metrics)
+    functional_correctness: 0.30     # Functional Correctness (30% - 4 metrics)
+    code_quality: 0.20              # Code Quality Assessment (20% - 3 metrics)  
+    longcontext_utilization: 0.10   # Long-Context Utilization (10% - 2 metrics)
   
   # Software Engineering Excellence metric weights (within the 40% software_engineering category)
   software_engineering_weights:
-    architectural_coherence: 0.125     # ACS: System design understanding
-    dependency_traversal: 0.125        # DTA: Cross-file navigation  
-    cross_file_reasoning: 0.125        # CFRD: Multi-file logic integration
-    system_thinking: 0.125             # STS: Holistic system understanding
-    robustness: 0.125                  # RS: Error handling and reliability
-    comprehensiveness: 0.125           # CS: Solution completeness  
-    innovation: 0.125                  # IS: Creative problem-solving
-    solution_elegance: 0.125           # SES: Code aesthetics and clarity
+    architectural_coherence: 0.125
+    dependency_traversal: 0.125
+    cross_file_reasoning: 0.125
+    system_thinking: 0.125
+    robustness: 0.125
+    comprehensiveness: 0.125
+    innovation: 0.125
+    solution_elegance: 0.125
     
   # Long-Context Utilization metric weights (within the 10% longcontext_utilization category)  
-  # 2 metrics: ICU, MMR
   longcontext_utilization_weights:
-    information_coverage: 0.50         # ICU: Context utilization efficiency
-    multi_session_memory: 0.50         # MMR: Long-term context retention
-  
-  # ======================================================================
-  # 4-DIMENSION EVALUATION FRAMEWORK (LCBS) - 17 METRICS TOTAL
-  # ======================================================================
-  #
-  # 🏗️ SOFTWARE ENGINEERING EXCELLENCE (40% - 8 metrics):
-  #    ACS, DTA, CFRD, STS, RS, CS, IS, SES
-  #
-  # ⚙️ FUNCTIONAL CORRECTNESS (30% - 4 metrics):
-  #    Code Compilation Success, Unit Test Performance, Integration Test Performance, IDC
-  #
-  # 🔍 CODE QUALITY ASSESSMENT (20% - 3 metrics): 
-  #    Security Analysis Score, Average Issues Found, Code Style Adherence
-  #
-  # 🧠 LONG-CONTEXT UTILIZATION (10% - 2 metrics):
-  #    ICU, MMR
+    information_coverage: 0.50
+    multi_session_memory: 0.50
   
   # Scoring thresholds (ENFORCED for pass/fail determination)
   score_thresholds:
@@ -186,30 +160,4 @@ phase4:
   
   # Timeout settings (seconds) - ENFORCED with asyncio.wait_for()
   task_timeout: 1800      # 30 minutes per task
-  session_timeout: 3600  # 60 minutes per session
-
-# =============================================================================
-# RETRIEVAL CONFIGURATION - Retrieval-Augmented Generation (RAG)
-# =============================================================================
-
-retrieval:
-  # Enable/disable retrieval mechanism for hard and expert scenarios
-  enabled: false  # Set to true to enable retrieval
-  
-  # Difficulty levels where retrieval should be applied
-  difficulties:
-    - "hard"
-    - "expert"
-  
-  # Number of top-K code fragments to retrieve
-  top_k: 5
-  
-  # Retrieval method: "embedding" (uses sentence-transformers) or "keyword" (simple keyword matching)
-  method: "embedding"
-  
-  # Embedding model name (only used if method is "embedding")
-  # Recommended: "all-MiniLM-L6-v2" (fast, lightweight) or "all-mpnet-base-v2" (more accurate)
-  model_name: "all-MiniLM-L6-v2"
-  
-  # Chunk size for code splitting (in characters)
-  chunk_size: 512
+  session_timeout: 3600   # 60 minutes per session

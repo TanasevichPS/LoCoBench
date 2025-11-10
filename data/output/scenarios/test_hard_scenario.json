@@ -1,0 +1,17 @@
+{
+  "id": "test_python_hard_001",
+  "title": "Implement Data Processing Pipeline",
+  "description": "Create a data processing pipeline with multiple functions",
+  "difficulty": "hard",
+  "task_category": "feature_implementation",
+  "language": "python",
+  "task_prompt": "Implement a data processing pipeline that includes: 1) A function to read CSV files, 2) A function to filter data by condition, 3) A function to aggregate data. Return JSON format: {\"files\": {\"pipeline.py\": \"...\"}}",
+  "context_files": {
+    "data_utils.py": "import csv\nimport json\n\ndef read_json(filepath):\n    '''Read JSON file'''\n    with open(filepath, 'r') as f:\n        return json.load(f)\n\ndef write_json(data, filepath):\n    '''Write data to JSON file'''\n    with open(filepath, 'w') as f:\n        json.dump(data, f, indent=2)",
+    "processors.py": "class DataProcessor:\n    def __init__(self):\n        self.data = []\n    \n    def load(self, data):\n        self.data = data\n        return self\n    \n    def process(self):\n        return self.data"
+  },
+  "metadata": {
+    "project_path": "./data/generated/test_project",
+    "context_length": 1200
+  }
+}

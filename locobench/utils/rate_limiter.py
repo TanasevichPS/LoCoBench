@@ -115,10 +115,21 @@ class APIRateLimitManager:
         self.limiters = {
             "openai": RateLimiter(openai_rate, openai_concurrent),
             "google": RateLimiter(google_rate, google_concurrent),
-            "claude": RateLimiter(claude_rate, claude_concurrent)
+            "claude": RateLimiter(claude_rate, claude_concurrent),
+            "custom": RateLimiter(openai_rate, openai_concurrent)
         }
         
-        logger.info(f"📊 API rate limiters created - OpenAI: {openai_rate}/{openai_concurrent}, Gemini: {google_rate}/{google_concurrent}, Claude: {claude_rate}/{claude_concurrent} (req/min, concurrent)")
+        logger.info(
+            "📊 API rate limiters created - OpenAI: %s/%s, Custom: %s/%s, Gemini: %s/%s, Claude: %s/%s (req/min, concurrent)",
+            openai_rate,
+            openai_concurrent,
+            openai_rate,
+            openai_concurrent,
+            google_rate,
+            google_concurrent,
+            claude_rate,
+            claude_concurrent,
+        )
     
     async def acquire(self, provider: str):
         """

@@ -1,0 +1,16 @@
+{
+  "id": "test_python_easy_001",
+  "title": "Calculate Factorial Function",
+  "description": "Implement a factorial function in Python",
+  "difficulty": "easy",
+  "task_category": "feature_implementation",
+  "language": "python",
+  "task_prompt": "Write a Python function `factorial(n)` that calculates the factorial of a number n. The function should handle edge cases (n=0, n=1) and use recursion. Return JSON format: {\"files\": {\"factorial.py\": \"...\"}}",
+  "context_files": {
+    "utils.py": "def calculate_sum(a, b):\n    '''Calculate sum of two numbers'''\n    return a + b\n\ndef calculate_product(a, b):\n    '''Calculate product of two numbers'''\n    return a * b"
+  },
+  "metadata": {
+    "project_path": "./data/generated/test_project",
+    "context_length": 500
+  }
+}
