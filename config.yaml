@@ -10,7 +10,7 @@ retrieval:
     - hard
     - expert
   enabled: true
-  top_percent: 0.30  # Increased to 30% for better coverage (architectural tasks get 2.0x = 60%)
+  top_percent: 0.25  # Optimized: architectural tasks get 1.5x = 37.5%, evaluator doubles to 50% max
   max_context_tokens: 100000  # Increased from 25000 to 100000 (~25K tokens, comparable to truncation)
   method: embedding
   model_name: all-MiniLM-L6-v2  # Fallback model name (used if local_model_path fails)
