@@ -768,71 +768,94 @@ def retrieve_relevant_embedding(
         for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
     )
     
-    # Adaptive ratios based on task type
+    # OPTIMIZED Adaptive ratios based on task type (combining best practices)
+    # Key insight: Architectural tasks need MORE files and MORE dependencies
+    # Code comprehension needs balanced approach with good semantic coverage
     if is_architectural_task:
-        # For architectural tasks: more dependencies, less semantic (need structure)
-        level1_ratio = 0.60  # Less semantic, more focused
-        level2_ratio = 0.30  # More dependencies (structure matters)
+        # For architectural tasks: MORE files overall, MORE dependencies, strong boost
+        # Strategy: Increase total selection by 1.5x, prioritize dependencies
+        level1_ratio = 0.55  # Slightly less semantic to make room for dependencies
+        level2_ratio = 0.35  # MORE dependencies (structure is critical)
         level3_ratio = 0.10
-        logger.debug("🏗️ Architectural task detected: L1=60%, L2=30%, L3=10%")
+        # Increase total selection for architectural tasks
+        selected_count = int(selected_count * 1.5)  # 50% more files for architectural understanding
+        logger.debug("🏗️ Architectural task detected: L1=55%, L2=35%, L3=10%, Total=%d files (1.5x)", selected_count)
     elif is_code_comprehension_task:
         # For code comprehension: balanced semantic + dependencies (need to trace flow)
-        level1_ratio = 0.65  # Good semantic coverage
+        level1_ratio = 0.70  # More semantic for better understanding
         level2_ratio = 0.25  # Important dependencies for tracing
-        level3_ratio = 0.10
-        logger.debug("🔍 Code comprehension task detected: L1=65%, L2=25%, L3=10%")
+        level3_ratio = 0.05  # Less important files
+        selected_count = int(selected_count * 1.2)  # 20% more files for comprehension
+        logger.debug("🔍 Code comprehension task detected: L1=70%, L2=25%, L3=5%, Total=%d files (1.2x)", selected_count)
     elif is_security_task:
         # For security: more semantic (find security-related code)
-        level1_ratio = 0.70
+        level1_ratio = 0.75  # Maximum semantic for finding security issues
         level2_ratio = 0.20  # Some dependencies for context
-        level3_ratio = 0.10
-        logger.debug("🔒 Security task detected: L1=70%, L2=20%, L3=10%")
+        level3_ratio = 0.05
+        logger.debug("🔒 Security task detected: L1=75%, L2=20%, L3=5%")
     elif is_feature_implementation_task:
         # For feature implementation: more semantic (find relevant code to modify)
-        level1_ratio = 0.75  # More semantic to find relevant code
+        level1_ratio = 0.80  # Maximum semantic to find relevant code
         level2_ratio = 0.15  # Some dependencies for context
-        level3_ratio = 0.10
-        logger.debug("⚙️ Feature implementation task detected: L1=75%, L2=15%, L3=10%")
+        level3_ratio = 0.05
+        logger.debug("⚙️ Feature implementation task detected: L1=80%, L2=15%, L3=5%")
     else:
-        # Default: balanced approach
-        level1_ratio = 0.70
+        # Default: balanced approach with slight semantic preference
+        level1_ratio = 0.75
         level2_ratio = 0.20
-        level3_ratio = 0.10
-        logger.debug("📝 Default task: L1=70%, L2=20%, L3=10%")
+        level3_ratio = 0.05
+        logger.debug("📝 Default task: L1=75%, L2=20%, L3=5%")
     
     ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
     
-    # Boost architectural files BEFORE selection for architectural tasks
+    # ENHANCED Boost architectural files BEFORE selection for architectural tasks
+    # This is critical for architectural understanding - boost BEFORE ranking
     if is_architectural_task:
         architectural_keywords = [
             'interface', 'abstract', 'base', 'config', 'main', 'entry', 
             'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
             'controller', 'model', 'view', 'util', 'common', 'core', 'api',
-            'store', 'repository', 'worker', 'handler', 'processor'
+            'store', 'repository', 'worker', 'handler', 'processor', 'sync',
+            'dao', 'dto', 'entity', 'domain', 'business', 'logic'
         ]
         
+        boosted_count = 0
         for file_info in ranked_files:
             file_path_lower = file_info["path"].lower()
             file_name_lower = Path(file_info["path"]).name.lower()
             
-            # Boost similarity for architectural files
+            # Enhanced boost similarity for architectural files
             boost = 0.0
+            
+            # Strong boost for architectural keywords in path/name
             for keyword in architectural_keywords:
                 if keyword in file_path_lower or keyword in file_name_lower:
-                    boost += 0.12  # Stronger boost
+                    boost += 0.15  # Increased boost
             
-            # Also boost files with common architectural patterns in content
-            content_preview = file_info.get("content", "")[:1000]  # Check first 1000 chars
+            # Strong boost for architectural patterns in content
+            content_preview = file_info.get("content", "")[:1500]  # Check first 1500 chars
             content_lower = content_preview.lower()
-            if any(pattern in content_lower for pattern in ['interface ', 'abstract class', 'implements', 'extends', 'public class']):
-                boost += 0.18  # Stronger boost for structural patterns
+            architectural_patterns = [
+                'interface ', 'abstract class', 'implements', 'extends', 
+                'public class', 'public interface', '@service', '@component',
+                '@repository', '@entity', 'class.*extends', 'class.*implements'
+            ]
+            pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
+            if pattern_matches > 0:
+                boost += 0.20 + (pattern_matches * 0.05)  # Stronger boost for multiple patterns
+            
+            # Additional boost for files that are likely architectural entry points
+            if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory']):
+                boost += 0.10
             
             if boost > 0:
                 original_sim = file_info.get("similarity", 0.0)
                 file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
         
         # Re-rank after boosting
         ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug("🏗️ Boosted %d architectural files before selection", boosted_count)
     
     # Calculate how many files to select at each level
     # Level 1: Top semantically relevant files
@@ -855,21 +878,29 @@ def retrieve_relevant_embedding(
             # Use lightweight analysis: limit file content analysis to first 2000 chars for speed
             dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
             
-            # Find dependent files (allow up to level2_count * 2 to have options)
+            # For architectural tasks, allow more dependent files to be found
+            max_dependent_multiplier = 2.0 if is_architectural_task else 1.5
+            max_dependent_files = min(
+                int(level2_count * max_dependent_multiplier), 
+                selected_count - level1_count
+            )
+            
+            # Find dependent files (allow more for architectural tasks)
             dependent_files = _find_dependent_files(
                 level1_files,
                 candidates,
                 dependency_graph,
                 reverse_graph,
-                max_dependent_files=min(level2_count * 2, selected_count - level1_count)
+                max_dependent_files=max_dependent_files
             )
             
             # Limit to level2_count
             dependent_files = dependent_files[:level2_count]
             
             logger.debug(
-                "📊 Multi-level retrieval: Level 2 (dependencies) found %d files",
-                len(dependent_files)
+                "📊 Multi-level retrieval: Level 2 (dependencies) found %d files (searched up to %d)",
+                len(dependent_files),
+                max_dependent_files
             )
         except Exception as e:
             logger.debug("Dependency analysis skipped or failed: %s", e)
