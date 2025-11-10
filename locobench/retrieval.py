@@ -345,6 +345,18 @@ def retrieve_relevant_embedding(
     else:
         selected_count = max(1, math.ceil(len(candidates) * top_percent))
     selected_count = min(selected_count, len(candidates))
+    
+    # Ensure we get at least top_k files if specified and it's larger than top_percent selection
+    if top_k and top_k > selected_count:
+        selected_count = min(top_k, len(candidates))
+    
+    logger.debug(
+        "Retrieval: selecting %d files from %d candidates (top_percent=%.2f, top_k=%s)",
+        selected_count,
+        len(candidates),
+        top_percent,
+        top_k,
+    )
 
     ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
     selected_files = ranked_files[:selected_count]

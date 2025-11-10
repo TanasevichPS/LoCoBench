@@ -10,12 +10,12 @@ retrieval:
     - hard
     - expert
   enabled: true
-  top_percent: 0.05
-  max_context_tokens: 25000  # ~6000-8000 tokens, leaving room for prompt overhead
+  top_percent: 0.20  # Increased from 0.05 to 0.20 (20% of files instead of 5%)
+  max_context_tokens: 100000  # Increased from 25000 to 100000 (~25K tokens, comparable to truncation)
   method: embedding
   model_name: all-MiniLM-L6-v2
   local_model_path: null
-  top_k: 5
+  top_k: 10  # Increased from 5 to 10 as fallback
 
 api:
   # API Keys (set via environment variables for security)
