@@ -316,6 +316,7 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
     """
     Extract dependencies from a file (imports, includes, etc.).
     Returns set of internal file paths that this file depends on.
+    Note: Returns potential dependency paths/names - actual resolution happens in _build_dependency_graph.
     """
     dependencies: Set[str] = set()
     
@@ -333,10 +334,6 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
             r'import\s+static\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*;',
         ]
         
-        # Extract package declaration from current file
-        package_match = re.search(r'^package\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*;', file_content, re.MULTILINE)
-        current_package = package_match.group(1) if package_match else None
-        
         for pattern in import_patterns:
             matches = re.findall(pattern, file_content)
             for match in matches:
@@ -344,45 +341,18 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
                 if match.startswith('java.') or match.startswith('javax.') or match.startswith('sun.'):
                     continue
                 
-                # Try to resolve to internal file
-                # Convert package path to file path
+                # Add both full package path and class name for flexible matching
                 parts = match.split('.')
                 if len(parts) > 0:
-                    # Try common Java package structures
-                    possible_paths = [
-                        '/'.join(parts) + '.java',
-                        '/'.join(parts[:-1]) + '/' + parts[-1] + '.java',
-                        'src/main/java/' + '/'.join(parts) + '.java',
-                        'src/' + '/'.join(parts) + '.java',
-                        'src/main/' + '/'.join(parts) + '.java',
-                    ]
-                    
-                    # If we have current package, try relative resolution
-                    if current_package and project_dir:
-                        current_package_parts = current_package.split('.')
-                        # Try resolving relative to current file's directory
-                        current_file_dir = Path(file_path).parent if '/' in file_path else base_dir
-                        if project_dir:
-                            try:
-                                rel_to_project = current_file_dir.relative_to(project_dir)
-                                # Try going up and then following package path
-                                for possible_path in possible_paths:
-                                    full_path = project_dir / possible_path
-                                    if full_path.exists():
-                                        rel_path = full_path.relative_to(project_dir).as_posix()
-                                        dependencies.add(rel_path)
-                                        break
-                            except ValueError:
-                                pass
-                    
-                    # Try absolute paths from project root
-                    for possible_path in possible_paths:
-                        if project_dir:
-                            full_path = project_dir / possible_path
-                            if full_path.exists():
-                                rel_path = full_path.relative_to(project_dir).as_posix()
-                                dependencies.add(rel_path)
-                                break
+                    class_name = parts[-1]
+                    # Add class name for simple matching
+                    dependencies.add(class_name)
+                    # Add package path variations
+                    dependencies.add('/'.join(parts) + '.java')
+                    dependencies.add('/'.join(parts[:-1]) + '/' + parts[-1] + '.java')
+                    # Add common Java paths
+                    dependencies.add('src/main/java/' + '/'.join(parts) + '.java')
+                    dependencies.add('src/' + '/'.join(parts) + '.java')
     
     # Python imports
     elif file_ext == '.py':
@@ -394,20 +364,10 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
         for pattern in import_patterns:
             matches = re.findall(pattern, file_content, re.MULTILINE)
             for match in matches:
-                # Convert module path to file path
                 parts = match.split('.')
                 if len(parts) > 0:
-                    possible_paths = [
-                        '/'.join(parts) + '.py',
-                        '/'.join(parts[:-1]) + '/' + parts[-1] + '.py',
-                    ]
-                    for possible_path in possible_paths:
-                        if project_dir:
-                            full_path = project_dir / possible_path
-                            if full_path.exists():
-                                rel_path = full_path.relative_to(project_dir).as_posix()
-                                dependencies.add(rel_path)
-                                break
+                    dependencies.add('/'.join(parts) + '.py')
+                    dependencies.add('/'.join(parts[:-1]) + '/' + parts[-1] + '.py')
     
     # JavaScript/TypeScript imports
     elif file_ext in {'.js', '.ts', '.jsx', '.tsx'}:
@@ -421,13 +381,7 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
             for match in matches:
                 # Skip node_modules and external packages
                 if match.startswith('.') or '/' in match:
-                    if project_dir:
-                        # Resolve relative path
-                        current_file_dir = Path(file_path).parent if '/' in file_path else base_dir
-                        resolved = (current_file_dir / match).resolve()
-                        if resolved.exists() and project_dir in resolved.parents:
-                            rel_path = resolved.relative_to(project_dir).as_posix()
-                            dependencies.add(rel_path)
+                    dependencies.add(match)
     
     # C/C++ includes
     elif file_ext in {'.c', '.cpp', '.h', '.hpp'}:
@@ -437,24 +391,14 @@ def _extract_file_dependencies(file_path: str, file_content: str, project_dir: O
         for pattern in include_patterns:
             matches = re.findall(pattern, file_content)
             for match in matches:
-                if project_dir:
-                    full_path = project_dir / match
-                    if full_path.exists():
-                        rel_path = full_path.relative_to(project_dir).as_posix()
-                        dependencies.add(rel_path)
+                dependencies.add(match)
     
     return dependencies
 
 
-def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: Optional[Path] = None) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+def _build_dependency_graph_fast(candidate_files: List[Dict[str, Any]], project_dir: Optional[Path] = None) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
     """
-    Build a dependency graph mapping file paths to sets of files they depend on.
-    Also builds reverse graph (files that depend on each file).
-    
-    Returns:
-        Tuple of (dependency_graph, reverse_graph) where:
-        - dependency_graph: maps file_path -> set of files it depends on
-        - reverse_graph: maps file_path -> set of files that depend on it
+    Fast version of dependency graph building - analyzes only first part of files for speed.
     """
     dependency_graph: Dict[str, Set[str]] = {}
     reverse_graph: Dict[str, Set[str]] = {}
@@ -463,7 +407,6 @@ def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: 
     file_map: Dict[str, Dict[str, Any]] = {}
     for file_info in candidate_files:
         file_path = file_info["path"]
-        # Normalize path for matching
         normalized_path = _normalize_relative_path(file_path)
         file_map[normalized_path] = file_info
         dependency_graph[normalized_path] = set()
@@ -478,38 +421,63 @@ def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: 
             filename_map[filename] = []
         filename_map[filename].append(normalized_path)
     
-    # Extract dependencies for each file
+    # Extract dependencies for each file (use only first 2000 chars for speed)
     for file_info in candidate_files:
         file_path = file_info["path"]
         normalized_path = _normalize_relative_path(file_path)
-        content = file_info.get("content", "")
+        # Use only first 2000 chars for dependency extraction (much faster)
+        content = file_info.get("content", "")[:2000]
         
         deps = _extract_file_dependencies(file_path, content, project_dir)
         
         # Resolve dependencies to internal files
         internal_deps: Set[str] = set()
+        file_ext = Path(file_path).suffix.lower()
+        
         for dep_path in deps:
-            # Normalize dependency path
             normalized_dep = _normalize_relative_path(dep_path)
             
             # Try exact match first
             if normalized_dep in file_map:
                 internal_deps.add(normalized_dep)
             else:
+                # For Java: try matching by class name (last part of package)
+                if file_ext == '.java':
+                    # Check if dep_path is just a class name (no path separators, no .java extension)
+                    if '/' not in dep_path and not dep_path.endswith('.java'):
+                        # This is a class name, try to find matching file
+                        if dep_path in filename_map:
+                            if len(filename_map[dep_path]) == 1:
+                                internal_deps.add(filename_map[dep_path][0])
+                            else:
+                                # Find best match
+                                current_dir = str(Path(normalized_path).parent)
+                                best_match = filename_map[dep_path][0]
+                                best_score = 0
+                                for candidate in filename_map[dep_path]:
+                                    candidate_dir = str(Path(candidate).parent)
+                                    if candidate_dir == current_dir:
+                                        best_match = candidate
+                                        break
+                                    elif current_dir in candidate_dir or candidate_dir in current_dir:
+                                        score = len(set(current_dir.split('/')) & set(candidate_dir.split('/')))
+                                        if score > best_score:
+                                            best_score = score
+                                            best_match = candidate
+                                internal_deps.add(best_match)
+                
                 # Try matching by filename
                 dep_filename = Path(normalized_dep).stem
                 if dep_filename in filename_map:
-                    # If multiple matches, prefer the one closest in directory structure
                     if len(filename_map[dep_filename]) == 1:
                         internal_deps.add(filename_map[dep_filename][0])
                     else:
-                        # Try to find best match based on directory similarity
+                        # Find best match based on directory similarity
                         current_dir = str(Path(normalized_path).parent)
                         best_match = filename_map[dep_filename][0]
                         best_score = 0
                         for candidate in filename_map[dep_filename]:
                             candidate_dir = str(Path(candidate).parent)
-                            # Simple scoring: prefer matches in same or nearby directories
                             if candidate_dir == current_dir:
                                 best_match = candidate
                                 break
@@ -527,6 +495,15 @@ def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: 
             reverse_graph[dep].add(normalized_path)
     
     return dependency_graph, reverse_graph
+
+
+def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: Optional[Path] = None) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """
+    Full version of dependency graph building - analyzes full file content.
+    Use _build_dependency_graph_fast for better performance.
+    """
+    # For now, use fast version - can be extended if needed
+    return _build_dependency_graph_fast(candidate_files, project_dir)
 
 
 def _find_dependent_files(
@@ -758,13 +735,16 @@ def retrieve_relevant_embedding(
         smart_chunking,
     )
 
-    # MULTI-LEVEL RETRIEVAL STRATEGY:
-    # Level 1: Semantically relevant files
+    # MULTI-LEVEL RETRIEVAL STRATEGY (optimized):
+    # Level 1: Semantically relevant files (75% - prioritize quality)
+    # Level 2: Files with dependencies (15% - fast lightweight analysis)
+    # Level 3: Beginning of important files (10% - minimal)
+    
     ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
     
     # Calculate how many files to select at each level
-    # Level 1: Top semantically relevant files (use 60% of budget)
-    level1_count = max(1, int(selected_count * 0.6))
+    # Level 1: Top semantically relevant files (use 75% of budget for better quality)
+    level1_count = max(1, int(selected_count * 0.75))
     level1_files = ranked_files[:level1_count]
     
     logger.debug(
@@ -772,34 +752,40 @@ def retrieve_relevant_embedding(
         len(level1_files)
     )
     
-    # Level 2: Files with dependencies (use 30% of budget)
-    level2_count = max(0, int(selected_count * 0.3))
+    # Level 2: Files with dependencies (use 15% of budget, but allow more if found)
+    level2_count = max(0, int(selected_count * 0.15))
     dependency_files: List[Dict[str, Any]] = []
     
-    if level2_count > 0 and project_dir:
+    # Only analyze dependencies if we have project_dir and it's worth it
+    if level2_count > 0 and project_dir and len(candidates) > 5:
         try:
-            # Build dependency graph
-            dependency_graph, reverse_graph = _build_dependency_graph(candidates, project_dir)
+            # Build dependency graph once for all candidates
+            # Use lightweight analysis: limit file content analysis to first 2000 chars for speed
+            dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
             
-            # Find dependent files
+            # Find dependent files (allow up to level2_count * 2 to have options)
             dependent_files = _find_dependent_files(
                 level1_files,
                 candidates,
                 dependency_graph,
                 reverse_graph,
-                max_dependent_files=level2_count
+                max_dependent_files=min(level2_count * 2, selected_count - level1_count)
             )
+            
+            # Limit to level2_count
+            dependent_files = dependent_files[:level2_count]
             
             logger.debug(
                 "📊 Multi-level retrieval: Level 2 (dependencies) found %d files",
                 len(dependent_files)
             )
         except Exception as e:
-            logger.warning("Failed to analyze dependencies: %s", e)
+            logger.debug("Dependency analysis skipped or failed: %s", e)
             dependent_files = []
     
-    # Level 3: Beginning of other important files (use remaining 10% of budget)
-    level3_count = max(0, selected_count - len(level1_files) - len(dependent_files))
+    # Level 3: Beginning of other important files (use remaining budget, max 10%)
+    remaining_budget = selected_count - len(level1_files) - len(dependent_files)
+    level3_count = max(0, min(remaining_budget, int(selected_count * 0.10)))
     important_files: List[Dict[str, Any]] = []
     
     if level3_count > 0:
@@ -814,6 +800,16 @@ def retrieve_relevant_embedding(
         logger.debug(
             "📊 Multi-level retrieval: Level 3 (important) selected %d files",
             len(important_files)
+        )
+    
+    # If we didn't fill the budget, add more Level 1 files (quality over quantity)
+    if len(level1_files) + len(dependent_files) + len(important_files) < selected_count:
+        remaining = selected_count - len(level1_files) - len(dependent_files) - len(important_files)
+        additional_level1 = ranked_files[len(level1_files):len(level1_files) + remaining]
+        level1_files.extend(additional_level1)
+        logger.debug(
+            "📊 Multi-level retrieval: Added %d more Level 1 files to fill budget",
+            len(additional_level1)
         )
     
     # Mark files with their level for later processing
