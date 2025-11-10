@@ -224,16 +224,23 @@ def _load_embedding_model(
         if local_model_path:
             resolved = Path(local_model_path).expanduser().resolve()
             if resolved.exists():
-                logger.info("Loading retrieval model from local path: %s", resolved)
-                MODEL_CACHE[cache_key] = SentenceTransformer(str(resolved))
-                return MODEL_CACHE[cache_key]
-            logger.warning("Local retrieval model path does not exist: %s", resolved)
+                logger.info("🔄 Loading retrieval model from local path: %s", resolved)
+                try:
+                    MODEL_CACHE[cache_key] = SentenceTransformer(str(resolved))
+                    logger.info("✅ Successfully loaded local retrieval model: %s", resolved)
+                    return MODEL_CACHE[cache_key]
+                except Exception as local_exc:
+                    logger.error("❌ Failed to load local model from %s: %s", resolved, local_exc, exc_info=True)
+                    logger.warning("⚠️ Falling back to model_name: %s", model_name)
+            else:
+                logger.warning("⚠️ Local retrieval model path does not exist: %s (falling back to %s)", resolved, model_name)
 
-        logger.info("Loading retrieval model by name: %s", model_name)
+        logger.info("🔄 Loading retrieval model by name: %s", model_name)
         MODEL_CACHE[cache_key] = SentenceTransformer(model_name)
+        logger.info("✅ Successfully loaded retrieval model: %s", model_name)
         return MODEL_CACHE[cache_key]
     except Exception as exc:  # pragma: no cover - dependent on external model availability
-        logger.error("Failed to load retrieval model (%s): %s", cache_key, exc, exc_info=True)
+        logger.error("❌ Failed to load retrieval model (%s): %s", cache_key, exc, exc_info=True)
         return None
 
 
