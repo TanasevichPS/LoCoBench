@@ -150,7 +150,7 @@ class RetrievalConfig:
     # Embedding model name (for embedding method)
     model_name: str = "all-MiniLM-L6-v2"
     
-    # Chunk size for code splitting (characters)
+    # Chunk size for code splitting (characters) - for keyword method
     chunk_size: int = 512
 
     # Upper bound on the retrieval context length (in characters)
@@ -158,6 +158,15 @@ class RetrievalConfig:
 
     # Optional local path to embedding model (SentenceTransformer) to avoid downloads
     local_model_path: Optional[str] = None
+    
+    # Smart chunking: split files into chunks and select most relevant chunks
+    smart_chunking: bool = True
+    
+    # Maximum number of chunks to select per file (when smart_chunking=True)
+    chunks_per_file: int = 5
+    
+    # Size of each chunk in characters (when smart_chunking=True)
+    retrieval_chunk_size: int = 2000
 
 
 @dataclass

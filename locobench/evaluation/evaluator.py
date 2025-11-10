@@ -2341,6 +2341,9 @@ class LoCoBenchEvaluator:
                     max_context_tokens=retrieval_config.max_context_tokens,
                     local_model_path=retrieval_config.local_model_path,
                     chunk_size=retrieval_config.chunk_size,
+                    smart_chunking=getattr(retrieval_config, 'smart_chunking', True),
+                    chunks_per_file=getattr(retrieval_config, 'chunks_per_file', 5),
+                    retrieval_chunk_size=getattr(retrieval_config, 'retrieval_chunk_size', 2000),
                 )
 
                 if retrieved_context:

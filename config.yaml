@@ -16,6 +16,9 @@ retrieval:
   model_name: all-MiniLM-L6-v2
   local_model_path: null
   top_k: 10  # Increased from 5 to 10 as fallback
+  smart_chunking: true  # Enable smart chunking: select most relevant chunks from files
+  chunks_per_file: 5  # Maximum chunks per file to select
+  retrieval_chunk_size: 2000  # Size of each chunk in characters for smart chunking
 
 api:
   # API Keys (set via environment variables for security)
