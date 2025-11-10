@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, Set, TYPE_CHECKING
 
 import numpy as np
 
@@ -224,9 +225,19 @@ def _load_embedding_model(
             resolved = Path(local_model_path).expanduser().resolve()
             if resolved.exists():
                 logger.info("Loading retrieval model from local path: %s", resolved)
-                MODEL_CACHE[cache_key] = SentenceTransformer(str(resolved))
-                return MODEL_CACHE[cache_key]
-            logger.warning("Local retrieval model path does not exist: %s", resolved)
+                try:
+                    # VESO models require trust_remote_code=True
+                    MODEL_CACHE[cache_key] = SentenceTransformer(
+                        str(resolved),
+                        trust_remote_code=True
+                    )
+                    logger.info("Successfully loaded local retrieval model: %s", resolved)
+                    return MODEL_CACHE[cache_key]
+                except Exception as local_exc:
+                    logger.error("Failed to load local model from %s: %s", resolved, local_exc, exc_info=True)
+                    logger.warning("Falling back to model_name: %s", model_name)
+            else:
+                logger.warning("Local retrieval model path does not exist: %s (falling back to %s)", resolved, model_name)
 
         logger.info("Loading retrieval model by name: %s", model_name)
         MODEL_CACHE[cache_key] = SentenceTransformer(model_name)
@@ -311,16 +322,534 @@ def _prepare_candidate_files(
     return list(combined.values())
 
 
+def _extract_file_dependencies(file_path: str, file_content: str, project_dir: Optional[Path] = None) -> Set[str]:
+    """
+    Extract dependencies from a file (imports, includes, etc.).
+    Returns set of internal file paths that this file depends on.
+    Note: Returns potential dependency paths/names - actual resolution happens in _build_dependency_graph.
+    """
+    dependencies: Set[str] = set()
+    
+    if not file_content:
+        return dependencies
+    
+    file_ext = Path(file_path).suffix.lower()
+    base_dir = project_dir if project_dir else Path(file_path).parent
+    
+    # Java imports
+    if file_ext == '.java':
+        # Match: import com.example.ClassName; or import com.example.*;
+        import_patterns = [
+            r'import\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*;',
+            r'import\s+static\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s*;',
+        ]
+        
+        for pattern in import_patterns:
+            matches = re.findall(pattern, file_content)
+            for match in matches:
+                # Skip java.lang and other standard library packages
+                if match.startswith('java.') or match.startswith('javax.') or match.startswith('sun.'):
+                    continue
+                
+                # Add both full package path and class name for flexible matching
+                parts = match.split('.')
+                if len(parts) > 0:
+                    class_name = parts[-1]
+                    # Add class name for simple matching
+                    dependencies.add(class_name)
+                    # Add package path variations
+                    dependencies.add('/'.join(parts) + '.java')
+                    dependencies.add('/'.join(parts[:-1]) + '/' + parts[-1] + '.java')
+                    # Add common Java paths
+                    dependencies.add('src/main/java/' + '/'.join(parts) + '.java')
+                    dependencies.add('src/' + '/'.join(parts) + '.java')
+    
+    # Python imports
+    elif file_ext == '.py':
+        import_patterns = [
+            r'^import\s+([a-zA-Z_][a-zA-Z0-9_.]*)',
+            r'^from\s+([a-zA-Z_][a-zA-Z0-9_.]*)\s+import',
+            r'^from\s+\.+([a-zA-Z_][a-zA-Z0-9_.]*)\s+import',  # Relative imports
+        ]
+        for pattern in import_patterns:
+            matches = re.findall(pattern, file_content, re.MULTILINE)
+            for match in matches:
+                parts = match.split('.')
+                if len(parts) > 0:
+                    dependencies.add('/'.join(parts) + '.py')
+                    dependencies.add('/'.join(parts[:-1]) + '/' + parts[-1] + '.py')
+    
+    # JavaScript/TypeScript imports
+    elif file_ext in {'.js', '.ts', '.jsx', '.tsx'}:
+        import_patterns = [
+            r"import\s+.*\s+from\s+['\"]([^'\"]+)['\"]",
+            r"import\s+['\"]([^'\"]+)['\"]",
+            r"require\s*\(\s*['\"]([^'\"]+)['\"]\s*\)",
+        ]
+        for pattern in import_patterns:
+            matches = re.findall(pattern, file_content)
+            for match in matches:
+                # Skip node_modules and external packages
+                if match.startswith('.') or '/' in match:
+                    dependencies.add(match)
+    
+    # C/C++ includes
+    elif file_ext in {'.c', '.cpp', '.h', '.hpp'}:
+        include_patterns = [
+            r'#include\s*["<]([^">]+)[">]',
+        ]
+        for pattern in include_patterns:
+            matches = re.findall(pattern, file_content)
+            for match in matches:
+                dependencies.add(match)
+    
+    return dependencies
+
+
+def _build_dependency_graph_fast(candidate_files: List[Dict[str, Any]], project_dir: Optional[Path] = None) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """
+    Fast version of dependency graph building - analyzes only first part of files for speed.
+    """
+    dependency_graph: Dict[str, Set[str]] = {}
+    reverse_graph: Dict[str, Set[str]] = {}
+    
+    # Create path to file_info mapping (normalize paths)
+    file_map: Dict[str, Dict[str, Any]] = {}
+    for file_info in candidate_files:
+        file_path = file_info["path"]
+        normalized_path = _normalize_relative_path(file_path)
+        file_map[normalized_path] = file_info
+        dependency_graph[normalized_path] = set()
+        reverse_graph[normalized_path] = set()
+    
+    # Also create mapping by filename (without extension) for better matching
+    filename_map: Dict[str, List[str]] = {}
+    for file_info in candidate_files:
+        normalized_path = _normalize_relative_path(file_info["path"])
+        filename = Path(normalized_path).stem
+        if filename not in filename_map:
+            filename_map[filename] = []
+        filename_map[filename].append(normalized_path)
+    
+    # Extract dependencies for each file (use only first 2000 chars for speed)
+    for file_info in candidate_files:
+        file_path = file_info["path"]
+        normalized_path = _normalize_relative_path(file_path)
+        # Use only first 2000 chars for dependency extraction (much faster)
+        content = file_info.get("content", "")[:2000]
+        
+        deps = _extract_file_dependencies(file_path, content, project_dir)
+        
+        # Resolve dependencies to internal files
+        internal_deps: Set[str] = set()
+        file_ext = Path(file_path).suffix.lower()
+        
+        for dep_path in deps:
+            normalized_dep = _normalize_relative_path(dep_path)
+            
+            # Try exact match first
+            if normalized_dep in file_map:
+                internal_deps.add(normalized_dep)
+            else:
+                # For Java: try matching by class name (last part of package)
+                if file_ext == '.java':
+                    # Check if dep_path is just a class name (no path separators, no .java extension)
+                    if '/' not in dep_path and not dep_path.endswith('.java'):
+                        # This is a class name, try to find matching file
+                        if dep_path in filename_map:
+                            if len(filename_map[dep_path]) == 1:
+                                internal_deps.add(filename_map[dep_path][0])
+                            else:
+                                # Find best match
+                                current_dir = str(Path(normalized_path).parent)
+                                best_match = filename_map[dep_path][0]
+                                best_score = 0
+                                for candidate in filename_map[dep_path]:
+                                    candidate_dir = str(Path(candidate).parent)
+                                    if candidate_dir == current_dir:
+                                        best_match = candidate
+                                        break
+                                    elif current_dir in candidate_dir or candidate_dir in current_dir:
+                                        score = len(set(current_dir.split('/')) & set(candidate_dir.split('/')))
+                                        if score > best_score:
+                                            best_score = score
+                                            best_match = candidate
+                                internal_deps.add(best_match)
+                
+                # Try matching by filename
+                dep_filename = Path(normalized_dep).stem
+                if dep_filename in filename_map:
+                    if len(filename_map[dep_filename]) == 1:
+                        internal_deps.add(filename_map[dep_filename][0])
+                    else:
+                        # Find best match based on directory similarity
+                        current_dir = str(Path(normalized_path).parent)
+                        best_match = filename_map[dep_filename][0]
+                        best_score = 0
+                        for candidate in filename_map[dep_filename]:
+                            candidate_dir = str(Path(candidate).parent)
+                            if candidate_dir == current_dir:
+                                best_match = candidate
+                                break
+                            elif current_dir in candidate_dir or candidate_dir in current_dir:
+                                score = len(set(current_dir.split('/')) & set(candidate_dir.split('/')))
+                                if score > best_score:
+                                    best_score = score
+                                    best_match = candidate
+                        internal_deps.add(best_match)
+        
+        dependency_graph[normalized_path] = internal_deps
+        
+        # Build reverse graph
+        for dep in internal_deps:
+            reverse_graph[dep].add(normalized_path)
+    
+    return dependency_graph, reverse_graph
+
+
+def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: Optional[Path] = None) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """
+    Full version of dependency graph building - analyzes full file content.
+    Use _build_dependency_graph_fast for better performance.
+    """
+    # For now, use fast version - can be extended if needed
+    return _build_dependency_graph_fast(candidate_files, project_dir)
+
+
+def _expand_via_dependency_graph(
+    seed_paths: Set[str],
+    dependency_graph: Dict[str, Set[str]],
+    reverse_graph: Dict[str, Set[str]],
+    max_depth: int = 2,
+    max_files_per_level: int = 15,
+) -> Set[str]:
+    """
+    Расширяет набор файлов через граф зависимостей на несколько уровней глубины.
+    Это помогает найти файлы, которые связаны косвенно через цепочку зависимостей.
+    """
+    expanded_paths = set(seed_paths)
+    current_level = seed_paths
+    
+    for depth in range(1, max_depth + 1):
+        next_level = set()
+        
+        for file_path in current_level:
+            # Найти прямые зависимости (forward)
+            deps = dependency_graph.get(file_path, set())
+            next_level.update(deps)
+            
+            # Найти обратные зависимости (reverse)
+            rev_deps = reverse_graph.get(file_path, set())
+            next_level.update(rev_deps)
+        
+        # Исключить уже добавленные файлы
+        next_level -= expanded_paths
+        
+        # Ограничить количество файлов на уровне
+        if len(next_level) > max_files_per_level:
+            # Взять случайную выборку или топ по важности
+            next_level = set(list(next_level)[:max_files_per_level])
+        
+        expanded_paths.update(next_level)
+        current_level = next_level
+        
+        if not current_level:
+            break  # Нет больше файлов для расширения
+    
+    return expanded_paths
+
+
+def _find_dependent_files(
+    selected_files: List[Dict[str, Any]],
+    candidate_files: List[Dict[str, Any]],
+    dependency_graph: Dict[str, Set[str]],
+    reverse_graph: Dict[str, Set[str]],
+    max_dependent_files: int = 10,
+    is_architectural_task: bool = False,
+    use_deep_expansion: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Find files that depend on selected files or are depended upon by selected files.
+    Uses multiple strategies including deep graph expansion.
+    Returns list of file_info dicts.
+    """
+    # Normalize selected file paths
+    selected_paths = {_normalize_relative_path(file_info["path"]) for file_info in selected_files}
+    dependent_paths: Set[str] = set()
+    
+    # Strategy 1: Deep graph expansion (2-3 уровня глубины)
+    if use_deep_expansion:
+        expanded_paths = _expand_via_dependency_graph(
+            selected_paths,
+            dependency_graph,
+            reverse_graph,
+            max_depth=2 if is_architectural_task else 3,  # Архитектурные: меньше глубина, больше зависимостей
+            max_files_per_level=20 if is_architectural_task else 15
+        )
+        dependent_paths.update(expanded_paths)
+        # Удалить исходные файлы из зависимостей
+        dependent_paths -= selected_paths
+    else:
+        # Fallback: простой поиск (1 уровень)
+        # Strategy 1: Find files that depend on selected files (reverse dependencies)
+        for selected_path in selected_paths:
+            dependents = reverse_graph.get(selected_path, set())
+            dependent_paths.update(dependents)
+        
+        # Strategy 2: Find files that selected files depend on (forward dependencies)
+        for selected_path in selected_paths:
+            dependencies = dependency_graph.get(selected_path, set())
+            dependent_paths.update(dependencies)
+    
+    # Strategy 3 & 4: Co-location and similar-name heuristics (only for non-architectural tasks)
+    # Architectural tasks already have good dependency coverage, so skip heuristics to avoid noise
+    if not is_architectural_task:
+        # Create file_map for lookups
+        file_map = {_normalize_relative_path(file_info["path"]): file_info for file_info in candidate_files}
+        
+        # Strategy 3: Co-location heuristic - files in same directory (up to 20% of max_dependent_files)
+        selected_dirs: Set[str] = set()
+        for file_info in selected_files:
+            file_path = _normalize_relative_path(file_info["path"])
+            file_dir = str(Path(file_path).parent)
+            selected_dirs.add(file_dir)
+        
+        same_dir_files = []
+        for file_path, file_info in file_map.items():
+            if file_path not in selected_paths and file_path not in dependent_paths:
+                file_dir = str(Path(file_path).parent)
+                if file_dir in selected_dirs:
+                    same_dir_files.append(file_info)
+        
+        # Add top same-dir files by similarity if available
+        if same_dir_files:
+            same_dir_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
+            same_dir_limit = max(1, int(max_dependent_files * 0.20))  # 20% of max
+            for file_info in same_dir_files[:same_dir_limit]:
+                file_path = _normalize_relative_path(file_info["path"])
+                if file_path not in selected_paths:
+                    dependent_paths.add(file_path)
+        
+        # Strategy 4: Similar-name heuristic - files with similar names (up to 15% of max_dependent_files)
+        selected_stems: Set[str] = set()
+        for file_info in selected_files:
+            file_path = _normalize_relative_path(file_info["path"])
+            stem = Path(file_path).stem.lower()
+            selected_stems.add(stem)
+        
+        # Look for files with similar stems (e.g., RoomStore and RoomStoreRepository)
+        similar_name_files = []
+        for file_path, file_info in file_map.items():
+            if file_path not in selected_paths and file_path not in dependent_paths:
+                stem = Path(file_path).stem.lower()
+                # Check if stem contains or is contained in any selected stem
+                for selected_stem in selected_stems:
+                    if (selected_stem in stem or stem in selected_stem) and stem != selected_stem:
+                        similar_name_files.append(file_info)
+                        break
+        
+        # Add top similar-name files
+        if similar_name_files:
+            similar_name_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
+            similar_limit = max(1, int(max_dependent_files * 0.15))  # 15% of max
+            for file_info in similar_name_files[:similar_limit]:
+                file_path = _normalize_relative_path(file_info["path"])
+                if file_path not in selected_paths:
+                    dependent_paths.add(file_path)
+    
+    # Remove files that are already selected
+    dependent_paths -= selected_paths
+    
+    # Create file_info dicts for dependent files from candidates
+    file_map = {_normalize_relative_path(file_info["path"]): file_info for file_info in candidate_files}
+    dependent_files = [file_map[path] for path in dependent_paths if path in file_map]
+    
+    # Sort by similarity if available, otherwise keep order
+    dependent_files.sort(key=lambda f: f.get("similarity", 0.0), reverse=True)
+    
+    return dependent_files[:max_dependent_files]
+
+
+def _identify_important_files(
+    candidate_files: List[Dict[str, Any]],
+    selected_files: List[Dict[str, Any]],
+    max_important_files: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    Identify important files that haven't been selected yet.
+    Important files are those with:
+    - Large size (significant functionality)
+    - Important names (main, config, core, etc.)
+    - High complexity indicators
+    """
+    selected_paths = {_normalize_relative_path(file_info["path"]) for file_info in selected_files}
+    remaining_files = [f for f in candidate_files if _normalize_relative_path(f["path"]) not in selected_paths]
+    
+    if not remaining_files:
+        return []
+    
+    # Score files by importance
+    important_keywords = [
+        'main', 'core', 'config', 'util', 'common', 'base', 'service',
+        'manager', 'controller', 'model', 'api', 'factory', 'builder'
+    ]
+    
+    scored_files: List[Tuple[float, Dict[str, Any]]] = []
+    
+    for file_info in remaining_files:
+        score = 0.0
+        file_path_lower = file_info["path"].lower()
+        file_name_lower = Path(file_info["path"]).name.lower()
+        
+        # Size score (normalized)
+        max_size = max(f.get("size_bytes", 0) for f in remaining_files) if remaining_files else 1
+        size_score = (file_info.get("size_bytes", 0) / max_size) * 0.3
+        score += size_score
+        
+        # Name importance score
+        for keyword in important_keywords:
+            if keyword in file_path_lower or keyword in file_name_lower:
+                score += 0.2
+                break
+        
+        # Content indicators (check first 500 chars)
+        content_preview = file_info.get("content", "")[:500].lower()
+        if any(indicator in content_preview for indicator in ['class ', 'interface ', 'public class', 'abstract class']):
+            score += 0.1
+        
+        scored_files.append((score, file_info))
+    
+    # Sort by score and return top files
+    scored_files.sort(key=lambda x: x[0], reverse=True)
+    return [file_info for _, file_info in scored_files[:max_important_files]]
+
+
+def _extract_key_entities_and_concepts(task_prompt: str) -> Dict[str, List[str]]:
+    """
+    Извлекает ключевые сущности, действия и концепции из промпта задачи.
+    Используется для создания оптимизированного запроса для ритривера.
+    """
+    task_lower = task_prompt.lower()
+    
+    # Извлечь имена классов/файлов (слова с заглавной буквы или в кавычках)
+    import re
+    # Имена классов (CamelCase)
+    class_names = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', task_prompt)
+    # Имена файлов (в кавычках или упомянутые явно)
+    file_names = re.findall(r'["\']([^"\']+)["\']', task_prompt)
+    # Имена из подчеркиваний (snake_case)
+    snake_case_names = re.findall(r'\b[a-z]+_[a-z_]+\b', task_lower)
+    
+    entities = list(set(class_names + file_names + snake_case_names))
+    
+    # Извлечь действия (глаголы)
+    action_keywords = [
+        'merge', 'refactor', 'implement', 'add', 'create', 'build', 'develop',
+        'trace', 'understand', 'analyze', 'evaluate', 'critique', 'review',
+        'fix', 'debug', 'optimize', 'improve', 'update', 'modify', 'change',
+        'integrate', 'combine', 'consolidate', 'restructure', 'reorganize'
+    ]
+    actions = [action for action in action_keywords if action in task_lower]
+    
+    # Извлечь концепции/домены
+    concept_keywords = [
+        'sync', 'synchronize', 'offline', 'online', 'persistence', 'cache',
+        'database', 'repository', 'service', 'controller', 'model', 'view',
+        'factory', 'builder', 'strategy', 'adapter', 'observer', 'singleton',
+        'security', 'authentication', 'authorization', 'encryption', 'validation',
+        'api', 'rest', 'endpoint', 'request', 'response', 'http', 'etag',
+        'data', 'entity', 'dto', 'dao', 'worker', 'handler', 'processor'
+    ]
+    concepts = [concept for concept in concept_keywords if concept in task_lower]
+    
+    return {
+        'entities': entities,
+        'actions': actions,
+        'concepts': concepts
+    }
+
+
+def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
+    """
+    Расширяет запрос для ритривера синонимами и связанными терминами.
+    Это помогает найти файлы, которые релевантны, но используют другую терминологию.
+    """
+    # Извлечь ключевые компоненты
+    extracted = _extract_key_entities_and_concepts(task_prompt)
+    
+    # Словарь синонимов для расширения запроса
+    synonym_map = {
+        'merge': ['combine', 'integrate', 'consolidate', 'unite', 'join'],
+        'refactor': ['restructure', 'reorganize', 'redesign', 'improve', 'optimize'],
+        'sync': ['synchronize', 'coordinate', 'align', 'match', 'update'],
+        'implement': ['create', 'build', 'develop', 'add', 'construct'],
+        'trace': ['follow', 'track', 'debug', 'investigate', 'analyze'],
+        'understand': ['comprehend', 'analyze', 'examine', 'study', 'review'],
+        'security': ['secure', 'safe', 'protection', 'authentication', 'authorization'],
+        'architecture': ['structure', 'design', 'organization', 'layout', 'framework'],
+        'offline': ['local', 'cached', 'stored', 'persistent'],
+        'repository': ['store', 'database', 'dao', 'data access'],
+        'service': ['manager', 'handler', 'processor', 'controller'],
+    }
+    
+    # Расширить ключевые слова синонимами
+    expanded_terms = []
+    
+    # Добавить оригинальные сущности
+    expanded_terms.extend(extracted['entities'])
+    
+    # Добавить действия с синонимами
+    for action in extracted['actions']:
+        expanded_terms.append(action)
+        if action in synonym_map:
+            expanded_terms.extend(synonym_map[action][:2])  # Добавить 2 синонима
+    
+    # Добавить концепции с синонимами
+    for concept in extracted['concepts']:
+        expanded_terms.append(concept)
+        if concept in synonym_map:
+            expanded_terms.extend(synonym_map[concept][:2])
+    
+    # Добавить связанные термины в зависимости от типа задачи
+    if task_type == 'architectural':
+        expanded_terms.extend(['interface', 'abstract', 'pattern', 'component', 'module', 'structure'])
+    elif task_type == 'comprehension':
+        expanded_terms.extend(['flow', 'call', 'invoke', 'method', 'function', 'execution'])
+    elif task_type == 'security':
+        expanded_terms.extend(['vulnerability', 'exploit', 'attack', 'injection', 'xss', 'csrf'])
+    elif task_type == 'implementation':
+        expanded_terms.extend(['feature', 'functionality', 'capability', 'endpoint', 'api'])
+    
+    # Создать расширенный запрос
+    expanded_query = task_prompt
+    if expanded_terms:
+        # Добавить расширенные термины, избегая дубликатов
+        unique_terms = list(set(expanded_terms))
+        # Фильтровать слишком короткие термины
+        meaningful_terms = [t for t in unique_terms if len(t) > 3]
+        if meaningful_terms:
+            expanded_query += " " + " ".join(meaningful_terms[:15])  # Ограничить количество
+    
+    return expanded_query
+
+
 def _rank_files_with_embeddings(
     model: "SentenceTransformer",
     task_prompt: str,
     candidate_files: List[Dict[str, Any]],
+    expanded_query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Rank candidate files using cosine similarity in embedding space."""
+    """
+    Rank candidate files using cosine similarity in embedding space.
+    Uses expanded query if provided for better retrieval.
+    """
     if not candidate_files:
         return []
 
-    texts = [task_prompt] + [file_info["content"] for file_info in candidate_files]
+    # Использовать расширенный запрос если предоставлен, иначе оригинальный
+    query_text = expanded_query if expanded_query else task_prompt
+    
+    texts = [query_text] + [file_info["content"] for file_info in candidate_files]
     embeddings = model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
 
     query_embedding = embeddings[0]
@@ -451,56 +980,298 @@ def retrieve_relevant_embedding(
         smart_chunking,
     )
 
-    ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
-    selected_files = ranked_files[:selected_count]
+    # MULTI-LEVEL RETRIEVAL STRATEGY (adaptive based on task type):
+    # Detect task type and adjust strategy accordingly
     
-    # For architectural understanding, boost files that are architecturally important
-    # (interfaces, abstract classes, config files, main entry points)
-    if smart_chunking:
-        # Check if this might be an architectural task (heuristic based on prompt)
-        is_architectural_task = any(
-            keyword in task_prompt.lower() 
-            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
+    task_prompt_lower = task_prompt.lower()
+    
+    # Detect task type
+    is_architectural_task = any(
+        keyword in task_prompt_lower 
+        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design']
+    )
+    
+    is_code_comprehension_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain']
+    )
+    
+    is_security_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack']
+    )
+    
+    is_feature_implementation_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
+    )
+    
+    # Apply multipliers based on task type (after detection)
+    original_selected_count = selected_count
+    if is_architectural_task:
+        # For architectural tasks, increase file count more aggressively
+        # Architectural tasks need more context to understand system structure
+        architectural_multiplier = 1.40  # Increased from 1.25 to 1.40 (40% more files)
+        selected_count = int(selected_count * architectural_multiplier)
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🏗️ Architectural task: increased file count from %d to %d (%.1fx)", 
+                    original_selected_count, selected_count, architectural_multiplier)
+    elif is_code_comprehension_task:
+        # Moderate increase for code comprehension to capture more flow context
+        selected_count = int(selected_count * 1.20)  # Increased from 1.15 to 1.20
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.20x)", 
+                    original_selected_count, selected_count)
+    
+    # Optimized adaptive ratios based on task type
+    if is_architectural_task:
+        # For architectural tasks: more dependencies for structure understanding
+        level1_ratio = 0.55  # More semantic for better quality selection
+        level2_ratio = 0.35  # More dependencies (structure matters)
+        level3_ratio = 0.10  # Important files
+        logger.debug("🏗️ Architectural task detected: L1=55%, L2=35%, L3=10%")
+    elif is_code_comprehension_task:
+        # For code comprehension: more dependencies for tracing flow
+        level1_ratio = 0.65  # Good semantic coverage
+        level2_ratio = 0.30  # More dependencies for tracing (increased from 25%)
+        level3_ratio = 0.05  # Less important files (reduced from 10%)
+        logger.debug("🔍 Code comprehension task detected: L1=65%, L2=30%, L3=5%")
+    elif is_security_task:
+        # For security: more semantic (find security-related code)
+        level1_ratio = 0.70
+        level2_ratio = 0.20  # Some dependencies for context
+        level3_ratio = 0.10
+        logger.debug("🔒 Security task detected: L1=70%, L2=20%, L3=10%")
+    elif is_feature_implementation_task:
+        # For feature implementation: more semantic (find relevant code to modify)
+        level1_ratio = 0.75  # More semantic to find relevant code
+        level2_ratio = 0.15  # Some dependencies for context
+        level3_ratio = 0.10
+        logger.debug("⚙️ Feature implementation task detected: L1=75%, L2=15%, L3=10%")
+    else:
+        # Default: balanced approach
+        level1_ratio = 0.70
+        level2_ratio = 0.20
+        level3_ratio = 0.10
+        logger.debug("📝 Default task: L1=70%, L2=20%, L3=10%")
+    
+    # Create optimized retrieval query using prompt engineering
+    task_type_name = None
+    if is_architectural_task:
+        task_type_name = 'architectural'
+    elif is_code_comprehension_task:
+        task_type_name = 'comprehension'
+    elif is_security_task:
+        task_type_name = 'security'
+    elif is_feature_implementation_task:
+        task_type_name = 'implementation'
+    
+    # Extract key entities and concepts for better retrieval
+    extracted_info = _extract_key_entities_and_concepts(task_prompt)
+    
+    # Expand query with synonyms and related terms
+    expanded_query = _expand_query_for_retrieval(task_prompt, task_type_name)
+    
+    logger.debug(
+        "🔍 Query expansion: extracted %d entities, %d actions, %d concepts",
+        len(extracted_info['entities']),
+        len(extracted_info['actions']),
+        len(extracted_info['concepts'])
+    )
+    
+    # Rank files using expanded query for better semantic matching
+    ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates, expanded_query=expanded_query)
+    
+    # Boost architectural files BEFORE selection for architectural tasks
+    if is_architectural_task:
+        architectural_keywords = [
+            'interface', 'abstract', 'base', 'config', 'main', 'entry', 
+            'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
+            'controller', 'model', 'view', 'util', 'common', 'core', 'api',
+            'store', 'repository', 'worker', 'handler', 'processor',
+            'room', 'offline', 'sync', 'data', 'persistence', 'cache', 'dao', 'dto', 'entity'
+        ]
+        
+        # Extract words from task prompt for matching
+        task_words = set(task_prompt_lower.split())
+        
+        boosted_count = 0
+        for file_info in ranked_files:
+            file_path_lower = file_info["path"].lower()
+            file_name_lower = Path(file_info["path"]).name.lower()
+            original_sim = file_info.get("similarity", 0.0)
+            
+            # Boost similarity for architectural files
+            boost = 0.0
+            
+            # 1. Boost for architectural keywords in path/name (further increased)
+            keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
+            if keyword_matches > 0:
+                boost += 0.22 + (keyword_matches * 0.03)  # Increased: Base 0.22 + 0.03 per keyword (max ~0.40)
+            
+            # 2. Boost for architectural patterns in content (increased and extended scan)
+            content_preview = file_info.get("content", "")[:2500]  # Extended to 2500 chars (was 2000)
+            content_lower = content_preview.lower()
+            architectural_patterns = [
+                'interface ', 'abstract class', 'implements', 'extends', 'public class',
+                'public interface', '@service', '@component', '@repository', '@entity',
+                'class.*extends', 'class.*implements', 'extends.*implements', 'implements.*extends'
+            ]
+            pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
+            if pattern_matches > 0:
+                boost += 0.28 + (pattern_matches * 0.06)  # Increased: Base 0.28 + 0.06 per pattern
+            
+            # 3. Boost for files with high similarity already (they're likely relevant)
+            if original_sim > 0.18:  # Lowered threshold from 0.20 to 0.18
+                boost += 0.15  # Increased from 0.12
+            
+            # 4. Boost for files mentioned in task prompt (by name)
+            file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
+            common_words = task_words.intersection(file_words)
+            if len(common_words) > 0:
+                boost += 0.18  # Increased from 0.15
+            
+            # 5. Additional boost for entry points and configuration files
+            if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
+                boost += 0.15  # Increased from 0.12
+            
+            if boost > 0:
+                file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
+        
+        # Re-rank after boosting
+        ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug("🏗️ Boosted %d architectural files before selection (max boost applied)", boosted_count)
+    
+    # Calculate how many files to select at each level
+    # Level 1: Top semantically relevant files
+    level1_count = max(1, int(selected_count * level1_ratio))
+    
+    # For architectural tasks, apply quality filter - only select files with good similarity
+    if is_architectural_task:
+        # Filter to files with similarity > 0.10 (after boost) to ensure quality
+        # Lowered threshold to capture more architectural files while maintaining quality
+        quality_threshold = 0.10  # Lowered from 0.12 to capture more files
+        quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
+        if len(quality_files) >= level1_count:
+            level1_files = quality_files[:level1_count]
+            logger.debug(
+                "🏗️ Architectural quality filter: selected %d files with similarity > %.2f",
+                len(level1_files),
+                quality_threshold
+            )
+        else:
+            # If not enough quality files, use all available but log warning
+            level1_files = ranked_files[:level1_count]
+            logger.debug(
+                "🏗️ Architectural: only %d files meet quality threshold, using top %d",
+                len(quality_files),
+                level1_count
+            )
+    else:
+        level1_files = ranked_files[:level1_count]
+    
+    logger.debug(
+        "📊 Multi-level retrieval: Level 1 (semantic) selected %d files",
+        len(level1_files)
+    )
+    
+    # Level 2: Files with dependencies (adaptive based on task type)
+    level2_count = max(0, int(selected_count * level2_ratio))
+    dependency_files: List[Dict[str, Any]] = []
+    
+    # Only analyze dependencies if we have project_dir and it's worth it
+    if level2_count > 0 and project_dir and len(candidates) > 5:
+        try:
+            # Build dependency graph once for all candidates
+            # Use lightweight analysis: limit file content analysis to first 2000 chars for speed
+            dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
+            
+            # Find dependent files with deep graph expansion (allow up to level2_count * 2.5 to have options)
+            dependent_files = _find_dependent_files(
+                level1_files,
+                candidates,
+                dependency_graph,
+                reverse_graph,
+                max_dependent_files=min(int(level2_count * 2.5), selected_count - level1_count),
+                is_architectural_task=is_architectural_task,
+                use_deep_expansion=True,  # Enable deep graph expansion
+            )
+            
+            # Limit to level2_count
+            dependent_files = dependent_files[:level2_count]
+            
+            logger.debug(
+                "📊 Multi-level retrieval: Level 2 (dependencies) found %d files",
+                len(dependent_files)
+            )
+        except Exception as e:
+            logger.debug("Dependency analysis skipped or failed: %s", e)
+            dependent_files = []
+    
+    # Level 3: Beginning of other important files (adaptive based on task type)
+    remaining_budget = selected_count - len(level1_files) - len(dependent_files)
+    level3_count = max(0, min(remaining_budget, int(selected_count * level3_ratio)))
+    important_files: List[Dict[str, Any]] = []
+    
+    if level3_count > 0:
+        # Combine already selected files
+        already_selected = level1_files + dependent_files
+        important_files = _identify_important_files(
+            candidates,
+            already_selected,
+            max_important_files=level3_count
         )
         
-        if is_architectural_task:
-            logger.debug("🏗️ Detected architectural task, boosting architectural files")
-            
-            # Boost files that are architecturally important
-            architectural_keywords = [
-                'interface', 'abstract', 'base', 'config', 'main', 'entry', 
-                'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
-                'controller', 'model', 'view', 'util', 'common', 'core', 'api'
-            ]
-            
-            for file_info in selected_files:
-                file_path_lower = file_info["path"].lower()
-                file_name_lower = Path(file_info["path"]).name.lower()
-                
-                # Boost similarity for architectural files
-                boost = 0.0
-                for keyword in architectural_keywords:
-                    if keyword in file_path_lower or keyword in file_name_lower:
-                        boost += 0.1
-                
-                # Also boost files with common architectural patterns in content
-                content_lower = file_info.get("content", "").lower()[:500]  # Check first 500 chars
-                if any(pattern in content_lower for pattern in ['interface ', 'abstract class', 'implements', 'extends']):
-                    boost += 0.15
-                
-                if boost > 0:
-                    original_sim = file_info.get("similarity", 0.0)
-                    file_info["similarity"] = min(1.0, original_sim + boost)
-                    logger.debug(
-                        "Boosted %s: %.3f -> %.3f (+%.3f)",
-                        file_info["path"],
-                        original_sim,
-                        file_info["similarity"],
-                        boost,
-                    )
-            
-            # Re-sort after boosting
-            selected_files = sorted(selected_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug(
+            "📊 Multi-level retrieval: Level 3 (important) selected %d files",
+            len(important_files)
+        )
+    
+    # If we didn't fill the budget, add more Level 1 files (quality over quantity)
+    if len(level1_files) + len(dependent_files) + len(important_files) < selected_count:
+        remaining = selected_count - len(level1_files) - len(dependent_files) - len(important_files)
+        additional_level1 = ranked_files[len(level1_files):len(level1_files) + remaining]
+        level1_files.extend(additional_level1)
+        logger.debug(
+            "📊 Multi-level retrieval: Added %d more Level 1 files to fill budget",
+            len(additional_level1)
+        )
+    
+    # Mark files with their level for later processing
+    for file_info in level1_files:
+        file_info["retrieval_level"] = 1
+    for file_info in dependent_files:
+        file_info["retrieval_level"] = 2
+    for file_info in important_files:
+        file_info["retrieval_level"] = 3
+    
+    # Combine all selected files
+    selected_files = level1_files + dependent_files + important_files
+    
+    # Remove duplicates (in case a file appears in multiple levels)
+    # Keep the file from the highest priority level (lower level number = higher priority)
+    seen_paths: Dict[str, Dict[str, Any]] = {}
+    for file_info in selected_files:
+        file_path = _normalize_relative_path(file_info["path"])
+        if file_path not in seen_paths:
+            seen_paths[file_path] = file_info
+        else:
+            # Keep file from lower level (higher priority)
+            current_level = seen_paths[file_path].get("retrieval_level", 999)
+            new_level = file_info.get("retrieval_level", 999)
+            if new_level < current_level:
+                seen_paths[file_path] = file_info
+    
+    selected_files = list(seen_paths.values())
+    
+    logger.info(
+        "📊 Multi-level retrieval summary: Level1=%d, Level2=%d, Level3=%d, Total=%d",
+        len(level1_files),
+        len(dependent_files),
+        len(important_files),
+        len(selected_files)
+    )
 
     if smart_chunking:
         # Split files into chunks and rank chunks by relevance
@@ -538,12 +1309,18 @@ def retrieve_relevant_embedding(
         # 2. Then select most relevant chunks with diversification (spread across file)
         # 3. For architectural tasks, prioritize beginning chunks (class/interface definitions)
         selected_chunks: List[Dict[str, Any]] = []
-        is_architectural_task = any(
-            keyword in task_prompt.lower() 
-            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
-        )
+        # Use is_architectural_task from outer scope (already defined above)
+        
+        # Get file level information
+        file_level_map: Dict[str, int] = {}
+        for file_info in selected_files:
+            normalized_path = _normalize_relative_path(file_info["path"])
+            file_level_map[normalized_path] = file_info.get("retrieval_level", 1)
         
         for file_path, file_chunks in chunks_by_file.items():
+            # Normalize file path for lookup
+            normalized_file_path = _normalize_relative_path(file_path)
+            
             # Sort chunks by position in file to find first chunk
             file_chunks_sorted_by_pos = sorted(file_chunks, key=lambda c: c.get("chunk_index", 0))
             first_chunk = file_chunks_sorted_by_pos[0] if file_chunks_sorted_by_pos else None
@@ -551,48 +1328,65 @@ def retrieve_relevant_embedding(
             # Sort by relevance
             file_chunks_sorted_by_relevance = sorted(file_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
             
-            # Select chunks: always include first chunk, then diversify
+            # Get retrieval level for this file
+            file_level = file_level_map.get(normalized_file_path, 1)
+            
+            # Select chunks based on retrieval level
             top_chunks = []
-            if first_chunk:
-                top_chunks.append(first_chunk)
             
-            # For architectural tasks, also prioritize first few chunks (class definitions)
-            if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
-                # Include first 2-3 chunks if they exist (usually contain class/interface definitions)
-                for i in range(1, min(3, len(file_chunks_sorted_by_pos))):
-                    early_chunk = file_chunks_sorted_by_pos[i]
-                    if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
-                        # Boost early chunks slightly for architectural understanding
-                        early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.05
-                        top_chunks.append(early_chunk)
-            
-            # Diversification strategy: select chunks from different parts of the file
-            # Divide file into regions and try to get at least one chunk from each region
-            if len(file_chunks_sorted_by_pos) > 1:
-                num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
-                if num_regions > 0:
-                    region_size = len(file_chunks_sorted_by_pos) // num_regions
-                    
-                    # Try to get one chunk from each region
-                    for region_idx in range(num_regions):
-                        region_start = region_idx * region_size
-                        region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
-                        region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
+            if file_level == 3:
+                # Level 3: Only take beginning chunks (first 1-2 chunks)
+                max_chunks_for_level3 = min(2, chunks_per_file)
+                for i in range(min(max_chunks_for_level3, len(file_chunks_sorted_by_pos))):
+                    top_chunks.append(file_chunks_sorted_by_pos[i])
+                logger.debug(
+                    "File %s (Level 3): selected first %d chunks only",
+                    file_path,
+                    len(top_chunks)
+                )
+            else:
+                # Level 1 and 2: Use full smart chunking strategy
+                # Select chunks: always include first chunk, then diversify
+                if first_chunk:
+                    top_chunks.append(first_chunk)
+                
+                # For architectural tasks, also prioritize first few chunks (class definitions)
+                if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
+                    # Include first 3-4 chunks if they exist (usually contain class/interface definitions)
+                    for i in range(1, min(4, len(file_chunks_sorted_by_pos))):
+                        early_chunk = file_chunks_sorted_by_pos[i]
+                        if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
+                            # Stronger boost for early chunks in architectural tasks
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.10
+                            top_chunks.append(early_chunk)
+                
+                # Diversification strategy: select chunks from different parts of the file
+                # Divide file into regions and try to get at least one chunk from each region
+                if len(file_chunks_sorted_by_pos) > 1:
+                    num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
+                    if num_regions > 0:
+                        region_size = len(file_chunks_sorted_by_pos) // num_regions
                         
-                        # Find most relevant chunk in this region
-                        if region_chunks:
-                            region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
-                            best_in_region = region_chunks_by_relevance[0]
+                        # Try to get one chunk from each region
+                        for region_idx in range(num_regions):
+                            region_start = region_idx * region_size
+                            region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
+                            region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
                             
-                            if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
-                                top_chunks.append(best_in_region)
-            
-            # Fill remaining slots with top relevant chunks
-            for chunk in file_chunks_sorted_by_relevance:
-                if len(top_chunks) >= chunks_per_file:
-                    break
-                if chunk not in top_chunks:
-                    top_chunks.append(chunk)
+                            # Find most relevant chunk in this region
+                            if region_chunks:
+                                region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+                                best_in_region = region_chunks_by_relevance[0]
+                                
+                                if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
+                                    top_chunks.append(best_in_region)
+                
+                # Fill remaining slots with top relevant chunks
+                for chunk in file_chunks_sorted_by_relevance:
+                    if len(top_chunks) >= chunks_per_file:
+                        break
+                    if chunk not in top_chunks:
+                        top_chunks.append(chunk)
             
             selected_chunks.extend(top_chunks)
             
