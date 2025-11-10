@@ -516,6 +516,49 @@ def _build_dependency_graph(candidate_files: List[Dict[str, Any]], project_dir: 
     return _build_dependency_graph_fast(candidate_files, project_dir)
 
 
+def _expand_via_dependency_graph(
+    seed_paths: Set[str],
+    dependency_graph: Dict[str, Set[str]],
+    reverse_graph: Dict[str, Set[str]],
+    max_depth: int = 2,
+    max_files_per_level: int = 15,
+) -> Set[str]:
+    """
+    Расширяет набор файлов через граф зависимостей на несколько уровней глубины.
+    Это помогает найти файлы, которые связаны косвенно через цепочку зависимостей.
+    """
+    expanded_paths = set(seed_paths)
+    current_level = seed_paths
+    
+    for depth in range(1, max_depth + 1):
+        next_level = set()
+        
+        for file_path in current_level:
+            # Найти прямые зависимости (forward)
+            deps = dependency_graph.get(file_path, set())
+            next_level.update(deps)
+            
+            # Найти обратные зависимости (reverse)
+            rev_deps = reverse_graph.get(file_path, set())
+            next_level.update(rev_deps)
+        
+        # Исключить уже добавленные файлы
+        next_level -= expanded_paths
+        
+        # Ограничить количество файлов на уровне
+        if len(next_level) > max_files_per_level:
+            # Взять случайную выборку или топ по важности
+            next_level = set(list(next_level)[:max_files_per_level])
+        
+        expanded_paths.update(next_level)
+        current_level = next_level
+        
+        if not current_level:
+            break  # Нет больше файлов для расширения
+    
+    return expanded_paths
+
+
 def _find_dependent_files(
     selected_files: List[Dict[str, Any]],
     candidate_files: List[Dict[str, Any]],
@@ -523,25 +566,40 @@ def _find_dependent_files(
     reverse_graph: Dict[str, Set[str]],
     max_dependent_files: int = 10,
     is_architectural_task: bool = False,
+    use_deep_expansion: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Find files that depend on selected files or are depended upon by selected files.
-    Uses multiple strategies to find dependencies.
+    Uses multiple strategies including deep graph expansion.
     Returns list of file_info dicts.
     """
     # Normalize selected file paths
     selected_paths = {_normalize_relative_path(file_info["path"]) for file_info in selected_files}
     dependent_paths: Set[str] = set()
     
-    # Strategy 1: Find files that depend on selected files (reverse dependencies)
-    for selected_path in selected_paths:
-        dependents = reverse_graph.get(selected_path, set())
-        dependent_paths.update(dependents)
-    
-    # Strategy 2: Find files that selected files depend on (forward dependencies)
-    for selected_path in selected_paths:
-        dependencies = dependency_graph.get(selected_path, set())
-        dependent_paths.update(dependencies)
+    # Strategy 1: Deep graph expansion (2-3 уровня глубины)
+    if use_deep_expansion:
+        expanded_paths = _expand_via_dependency_graph(
+            selected_paths,
+            dependency_graph,
+            reverse_graph,
+            max_depth=2 if is_architectural_task else 3,  # Архитектурные: меньше глубина, больше зависимостей
+            max_files_per_level=20 if is_architectural_task else 15
+        )
+        dependent_paths.update(expanded_paths)
+        # Удалить исходные файлы из зависимостей
+        dependent_paths -= selected_paths
+    else:
+        # Fallback: простой поиск (1 уровень)
+        # Strategy 1: Find files that depend on selected files (reverse dependencies)
+        for selected_path in selected_paths:
+            dependents = reverse_graph.get(selected_path, set())
+            dependent_paths.update(dependents)
+        
+        # Strategy 2: Find files that selected files depend on (forward dependencies)
+        for selected_path in selected_paths:
+            dependencies = dependency_graph.get(selected_path, set())
+            dependent_paths.update(dependencies)
     
     # Strategy 3 & 4: Co-location and similar-name heuristics (only for non-architectural tasks)
     # Architectural tasks already have good dependency coverage, so skip heuristics to avoid noise
@@ -666,16 +724,132 @@ def _identify_important_files(
     return [file_info for _, file_info in scored_files[:max_important_files]]
 
 
+def _extract_key_entities_and_concepts(task_prompt: str) -> Dict[str, List[str]]:
+    """
+    Извлекает ключевые сущности, действия и концепции из промпта задачи.
+    Используется для создания оптимизированного запроса для ритривера.
+    """
+    task_lower = task_prompt.lower()
+    
+    # Извлечь имена классов/файлов (слова с заглавной буквы или в кавычках)
+    import re
+    # Имена классов (CamelCase)
+    class_names = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', task_prompt)
+    # Имена файлов (в кавычках или упомянутые явно)
+    file_names = re.findall(r'["\']([^"\']+)["\']', task_prompt)
+    # Имена из подчеркиваний (snake_case)
+    snake_case_names = re.findall(r'\b[a-z]+_[a-z_]+\b', task_lower)
+    
+    entities = list(set(class_names + file_names + snake_case_names))
+    
+    # Извлечь действия (глаголы)
+    action_keywords = [
+        'merge', 'refactor', 'implement', 'add', 'create', 'build', 'develop',
+        'trace', 'understand', 'analyze', 'evaluate', 'critique', 'review',
+        'fix', 'debug', 'optimize', 'improve', 'update', 'modify', 'change',
+        'integrate', 'combine', 'consolidate', 'restructure', 'reorganize'
+    ]
+    actions = [action for action in action_keywords if action in task_lower]
+    
+    # Извлечь концепции/домены
+    concept_keywords = [
+        'sync', 'synchronize', 'offline', 'online', 'persistence', 'cache',
+        'database', 'repository', 'service', 'controller', 'model', 'view',
+        'factory', 'builder', 'strategy', 'adapter', 'observer', 'singleton',
+        'security', 'authentication', 'authorization', 'encryption', 'validation',
+        'api', 'rest', 'endpoint', 'request', 'response', 'http', 'etag',
+        'data', 'entity', 'dto', 'dao', 'worker', 'handler', 'processor'
+    ]
+    concepts = [concept for concept in concept_keywords if concept in task_lower]
+    
+    return {
+        'entities': entities,
+        'actions': actions,
+        'concepts': concepts
+    }
+
+
+def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
+    """
+    Расширяет запрос для ритривера синонимами и связанными терминами.
+    Это помогает найти файлы, которые релевантны, но используют другую терминологию.
+    """
+    # Извлечь ключевые компоненты
+    extracted = _extract_key_entities_and_concepts(task_prompt)
+    
+    # Словарь синонимов для расширения запроса
+    synonym_map = {
+        'merge': ['combine', 'integrate', 'consolidate', 'unite', 'join'],
+        'refactor': ['restructure', 'reorganize', 'redesign', 'improve', 'optimize'],
+        'sync': ['synchronize', 'coordinate', 'align', 'match', 'update'],
+        'implement': ['create', 'build', 'develop', 'add', 'construct'],
+        'trace': ['follow', 'track', 'debug', 'investigate', 'analyze'],
+        'understand': ['comprehend', 'analyze', 'examine', 'study', 'review'],
+        'security': ['secure', 'safe', 'protection', 'authentication', 'authorization'],
+        'architecture': ['structure', 'design', 'organization', 'layout', 'framework'],
+        'offline': ['local', 'cached', 'stored', 'persistent'],
+        'repository': ['store', 'database', 'dao', 'data access'],
+        'service': ['manager', 'handler', 'processor', 'controller'],
+    }
+    
+    # Расширить ключевые слова синонимами
+    expanded_terms = []
+    
+    # Добавить оригинальные сущности
+    expanded_terms.extend(extracted['entities'])
+    
+    # Добавить действия с синонимами
+    for action in extracted['actions']:
+        expanded_terms.append(action)
+        if action in synonym_map:
+            expanded_terms.extend(synonym_map[action][:2])  # Добавить 2 синонима
+    
+    # Добавить концепции с синонимами
+    for concept in extracted['concepts']:
+        expanded_terms.append(concept)
+        if concept in synonym_map:
+            expanded_terms.extend(synonym_map[concept][:2])
+    
+    # Добавить связанные термины в зависимости от типа задачи
+    if task_type == 'architectural':
+        expanded_terms.extend(['interface', 'abstract', 'pattern', 'component', 'module', 'structure'])
+    elif task_type == 'comprehension':
+        expanded_terms.extend(['flow', 'call', 'invoke', 'method', 'function', 'execution'])
+    elif task_type == 'security':
+        expanded_terms.extend(['vulnerability', 'exploit', 'attack', 'injection', 'xss', 'csrf'])
+    elif task_type == 'implementation':
+        expanded_terms.extend(['feature', 'functionality', 'capability', 'endpoint', 'api'])
+    
+    # Создать расширенный запрос
+    expanded_query = task_prompt
+    if expanded_terms:
+        # Добавить расширенные термины, избегая дубликатов
+        unique_terms = list(set(expanded_terms))
+        # Фильтровать слишком короткие термины
+        meaningful_terms = [t for t in unique_terms if len(t) > 3]
+        if meaningful_terms:
+            expanded_query += " " + " ".join(meaningful_terms[:15])  # Ограничить количество
+    
+    return expanded_query
+
+
 def _rank_files_with_embeddings(
     model: "SentenceTransformer",
     task_prompt: str,
     candidate_files: List[Dict[str, Any]],
+    expanded_query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Rank candidate files using cosine similarity in embedding space."""
+    """
+    Rank candidate files using cosine similarity in embedding space.
+    Uses expanded query if provided for better retrieval.
+    """
     if not candidate_files:
         return []
 
-    texts = [task_prompt] + [file_info["content"] for file_info in candidate_files]
+    # Использовать расширенный запрос если предоставлен, иначе оригинальный
+    query_text = expanded_query if expanded_query else task_prompt
+    
+    texts = [query_text] + [file_info["content"] for file_info in candidate_files]
     embeddings = model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
 
     query_embedding = embeddings[0]
@@ -881,7 +1055,32 @@ def retrieve_relevant_embedding(
         level3_ratio = 0.10
         logger.debug("📝 Default task: L1=70%, L2=20%, L3=10%")
     
-    ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates)
+    # Create optimized retrieval query using prompt engineering
+    task_type_name = None
+    if is_architectural_task:
+        task_type_name = 'architectural'
+    elif is_code_comprehension_task:
+        task_type_name = 'comprehension'
+    elif is_security_task:
+        task_type_name = 'security'
+    elif is_feature_implementation_task:
+        task_type_name = 'implementation'
+    
+    # Extract key entities and concepts for better retrieval
+    extracted_info = _extract_key_entities_and_concepts(task_prompt)
+    
+    # Expand query with synonyms and related terms
+    expanded_query = _expand_query_for_retrieval(task_prompt, task_type_name)
+    
+    logger.debug(
+        "🔍 Query expansion: extracted %d entities, %d actions, %d concepts",
+        len(extracted_info['entities']),
+        len(extracted_info['actions']),
+        len(extracted_info['concepts'])
+    )
+    
+    # Rank files using expanded query for better semantic matching
+    ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates, expanded_query=expanded_query)
     
     # Boost architectural files BEFORE selection for architectural tasks
     if is_architectural_task:
@@ -988,14 +1187,15 @@ def retrieve_relevant_embedding(
             # Use lightweight analysis: limit file content analysis to first 2000 chars for speed
             dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
             
-            # Find dependent files (allow up to level2_count * 2 to have options)
+            # Find dependent files with deep graph expansion (allow up to level2_count * 2.5 to have options)
             dependent_files = _find_dependent_files(
                 level1_files,
                 candidates,
                 dependency_graph,
                 reverse_graph,
-                max_dependent_files=min(level2_count * 2, selected_count - level1_count),
+                max_dependent_files=min(int(level2_count * 2.5), selected_count - level1_count),
                 is_architectural_task=is_architectural_task,
+                use_deep_expansion=True,  # Enable deep graph expansion
             )
             
             # Limit to level2_count
