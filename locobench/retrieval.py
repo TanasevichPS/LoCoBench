@@ -485,12 +485,60 @@ def retrieve_relevant_embedding(
                 chunks_by_file[file_path] = []
             chunks_by_file[file_path].append(chunk)
         
-        # Select top chunks per file
+        # Select top chunks per file with smart strategy:
+        # 1. Always include the first chunk (file header, imports, class definitions)
+        # 2. Then select most relevant chunks with diversification (spread across file)
         selected_chunks: List[Dict[str, Any]] = []
         for file_path, file_chunks in chunks_by_file.items():
-            # Take top chunks_per_file chunks from each file
-            top_chunks = sorted(file_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)[:chunks_per_file]
+            # Sort chunks by position in file to find first chunk
+            file_chunks_sorted_by_pos = sorted(file_chunks, key=lambda c: c.get("chunk_index", 0))
+            first_chunk = file_chunks_sorted_by_pos[0] if file_chunks_sorted_by_pos else None
+            
+            # Sort by relevance
+            file_chunks_sorted_by_relevance = sorted(file_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+            
+            # Select chunks: always include first chunk, then diversify
+            top_chunks = []
+            if first_chunk:
+                top_chunks.append(first_chunk)
+            
+            # Diversification strategy: select chunks from different parts of the file
+            # Divide file into regions and try to get at least one chunk from each region
+            if len(file_chunks_sorted_by_pos) > 1:
+                num_regions = min(3, chunks_per_file - 1)  # 3 regions: beginning, middle, end
+                region_size = len(file_chunks_sorted_by_pos) // num_regions
+                
+                # Try to get one chunk from each region
+                for region_idx in range(num_regions):
+                    region_start = region_idx * region_size
+                    region_end = (region_idx + 1) * region_size if region_idx < num_regions - 1 else len(file_chunks_sorted_by_pos)
+                    region_chunks = file_chunks_sorted_by_pos[region_start:region_end]
+                    
+                    # Find most relevant chunk in this region
+                    if region_chunks:
+                        region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
+                        best_in_region = region_chunks_by_relevance[0]
+                        
+                        if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
+                            top_chunks.append(best_in_region)
+            
+            # Fill remaining slots with top relevant chunks
+            for chunk in file_chunks_sorted_by_relevance:
+                if len(top_chunks) >= chunks_per_file:
+                    break
+                if chunk not in top_chunks:
+                    top_chunks.append(chunk)
+            
             selected_chunks.extend(top_chunks)
+            
+            logger.debug(
+                "File %s: selected %d chunks (first chunk: %s, diversification: %s, top similarity: %.3f)",
+                file_path,
+                len(top_chunks),
+                "yes" if first_chunk in top_chunks else "no",
+                "yes" if len(set(c.get("chunk_index", 0) for c in top_chunks)) > 2 else "no",
+                file_chunks_sorted_by_relevance[0].get("similarity", 0.0) if file_chunks_sorted_by_relevance else 0.0,
+            )
         
         # Re-rank selected chunks globally
         selected_chunks = sorted(selected_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)

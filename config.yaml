@@ -17,8 +17,8 @@ retrieval:
   local_model_path: null
   top_k: 10  # Increased from 5 to 10 as fallback
   smart_chunking: true  # Enable smart chunking: select most relevant chunks from files
-  chunks_per_file: 5  # Maximum chunks per file to select
-  retrieval_chunk_size: 2000  # Size of each chunk in characters for smart chunking
+  chunks_per_file: 8  # Increased from 5 to 8 - more chunks per file for better coverage
+  retrieval_chunk_size: 2500  # Increased from 2000 to 2500 - larger chunks are more informative
 
 api:
   # API Keys (set via environment variables for security)
