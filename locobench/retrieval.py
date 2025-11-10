@@ -832,6 +832,23 @@ def retrieve_relevant_embedding(
         for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
     )
     
+    # Apply multipliers based on task type (after detection)
+    original_selected_count = selected_count
+    if is_architectural_task:
+        # For architectural tasks, increase file count moderately (but not too aggressive)
+        # This helps capture more architectural context without overwhelming the prompt
+        architectural_multiplier = 1.25  # 25% more files (conservative increase)
+        selected_count = int(selected_count * architectural_multiplier)
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🏗️ Architectural task: increased file count from %d to %d (%.1fx)", 
+                    original_selected_count, selected_count, architectural_multiplier)
+    elif is_code_comprehension_task:
+        # Moderate increase for code comprehension to capture more flow context
+        selected_count = int(selected_count * 1.15)  # 15% more files
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.15x)", 
+                    original_selected_count, selected_count)
+    
     # Optimized adaptive ratios based on task type
     if is_architectural_task:
         # For architectural tasks: more dependencies for structure understanding
@@ -872,12 +889,14 @@ def retrieve_relevant_embedding(
             'interface', 'abstract', 'base', 'config', 'main', 'entry', 
             'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
             'controller', 'model', 'view', 'util', 'common', 'core', 'api',
-            'store', 'repository', 'worker', 'handler', 'processor'
+            'store', 'repository', 'worker', 'handler', 'processor',
+            'room', 'offline', 'sync', 'data', 'persistence', 'cache', 'dao', 'dto', 'entity'
         ]
         
         # Extract words from task prompt for matching
         task_words = set(task_prompt_lower.split())
         
+        boosted_count = 0
         for file_info in ranked_files:
             file_path_lower = file_info["path"].lower()
             file_name_lower = Path(file_info["path"]).name.lower()
@@ -886,37 +905,72 @@ def retrieve_relevant_embedding(
             # Boost similarity for architectural files
             boost = 0.0
             
-            # 1. Boost for architectural keywords in path/name (increased from 0.12 to 0.15)
-            for keyword in architectural_keywords:
-                if keyword in file_path_lower or keyword in file_name_lower:
-                    boost += 0.15  # Increased boost
+            # 1. Boost for architectural keywords in path/name (further increased)
+            keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
+            if keyword_matches > 0:
+                boost += 0.18 + (keyword_matches * 0.02)  # Base 0.18 + 0.02 per additional keyword (max ~0.30)
             
-            # 2. Boost for architectural patterns in content (increased from 0.18 to 0.22)
-            content_preview = file_info.get("content", "")[:1000]  # Check first 1000 chars
+            # 2. Boost for architectural patterns in content (increased and extended scan)
+            content_preview = file_info.get("content", "")[:2000]  # Extended to 2000 chars
             content_lower = content_preview.lower()
-            if any(pattern in content_lower for pattern in ['interface ', 'abstract class', 'implements', 'extends', 'public class']):
-                boost += 0.22  # Increased boost for structural patterns
+            architectural_patterns = [
+                'interface ', 'abstract class', 'implements', 'extends', 'public class',
+                'public interface', '@service', '@component', '@repository', '@entity',
+                'class.*extends', 'class.*implements'
+            ]
+            pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
+            if pattern_matches > 0:
+                boost += 0.25 + (pattern_matches * 0.05)  # Base 0.25 + 0.05 per pattern
             
             # 3. Boost for files with high similarity already (they're likely relevant)
-            if original_sim > 0.25:
-                boost += 0.10  # Additional boost for high-similarity files
+            if original_sim > 0.20:  # Lowered threshold from 0.25 to 0.20
+                boost += 0.12  # Increased from 0.10
             
             # 4. Boost for files mentioned in task prompt (by name)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.10  # Boost for files mentioned in prompt
+                boost += 0.15  # Increased from 0.10
+            
+            # 5. Additional boost for entry points and configuration files
+            if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
+                boost += 0.12  # Additional boost for entry points
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
         
         # Re-rank after boosting
         ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug("🏗️ Boosted %d architectural files before selection (max boost applied)", boosted_count)
     
     # Calculate how many files to select at each level
     # Level 1: Top semantically relevant files
     level1_count = max(1, int(selected_count * level1_ratio))
-    level1_files = ranked_files[:level1_count]
+    
+    # For architectural tasks, apply quality filter - only select files with good similarity
+    if is_architectural_task:
+        # Filter to files with similarity > 0.12 (after boost) to ensure quality
+        # This is a soft filter - we still want to capture architectural files even if similarity is moderate
+        quality_threshold = 0.12
+        quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
+        if len(quality_files) >= level1_count:
+            level1_files = quality_files[:level1_count]
+            logger.debug(
+                "🏗️ Architectural quality filter: selected %d files with similarity > %.2f",
+                len(level1_files),
+                quality_threshold
+            )
+        else:
+            # If not enough quality files, use all available but log warning
+            level1_files = ranked_files[:level1_count]
+            logger.debug(
+                "🏗️ Architectural: only %d files meet quality threshold, using top %d",
+                len(quality_files),
+                level1_count
+            )
+    else:
+        level1_files = ranked_files[:level1_count]
     
     logger.debug(
         "📊 Multi-level retrieval: Level 1 (semantic) selected %d files",
@@ -1098,12 +1152,12 @@ def retrieve_relevant_embedding(
                 
                 # For architectural tasks, also prioritize first few chunks (class definitions)
                 if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
-                    # Include first 2-3 chunks if they exist (usually contain class/interface definitions)
-                    for i in range(1, min(3, len(file_chunks_sorted_by_pos))):
+                    # Include first 3-4 chunks if they exist (usually contain class/interface definitions)
+                    for i in range(1, min(4, len(file_chunks_sorted_by_pos))):
                         early_chunk = file_chunks_sorted_by_pos[i]
                         if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
-                            # Boost early chunks slightly for architectural understanding
-                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.05
+                            # Stronger boost for early chunks in architectural tasks
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.10
                             top_chunks.append(early_chunk)
                 
                 # Diversification strategy: select chunks from different parts of the file
