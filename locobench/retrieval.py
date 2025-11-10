@@ -743,17 +743,22 @@ def retrieve_relevant_embedding(
     # Detect task type
     is_architectural_task = any(
         keyword in task_prompt_lower 
-        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor']
+        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design']
     )
     
     is_code_comprehension_task = any(
         keyword in task_prompt_lower
-        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy']
+        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain']
     )
     
     is_security_task = any(
         keyword in task_prompt_lower
-        for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection']
+        for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack']
+    )
+    
+    is_feature_implementation_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
     )
     
     # Adaptive ratios based on task type
@@ -775,6 +780,12 @@ def retrieve_relevant_embedding(
         level2_ratio = 0.20  # Some dependencies for context
         level3_ratio = 0.10
         logger.debug("🔒 Security task detected: L1=70%, L2=20%, L3=10%")
+    elif is_feature_implementation_task:
+        # For feature implementation: more semantic (find relevant code to modify)
+        level1_ratio = 0.75  # More semantic to find relevant code
+        level2_ratio = 0.15  # Some dependencies for context
+        level3_ratio = 0.10
+        logger.debug("⚙️ Feature implementation task detected: L1=75%, L2=15%, L3=10%")
     else:
         # Default: balanced approach
         level1_ratio = 0.70
@@ -826,8 +837,8 @@ def retrieve_relevant_embedding(
         len(level1_files)
     )
     
-    # Level 2: Files with dependencies (use 15% of budget, but allow more if found)
-    level2_count = max(0, int(selected_count * 0.15))
+    # Level 2: Files with dependencies (adaptive based on task type)
+    level2_count = max(0, int(selected_count * level2_ratio))
     dependency_files: List[Dict[str, Any]] = []
     
     # Only analyze dependencies if we have project_dir and it's worth it
@@ -957,10 +968,7 @@ def retrieve_relevant_embedding(
         # 2. Then select most relevant chunks with diversification (spread across file)
         # 3. For architectural tasks, prioritize beginning chunks (class/interface definitions)
         selected_chunks: List[Dict[str, Any]] = []
-        is_architectural_task = any(
-            keyword in task_prompt.lower() 
-            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module']
-        )
+        # Use is_architectural_task from outer scope (already defined above)
         
         # Get file level information
         file_level_map: Dict[str, int] = {}
