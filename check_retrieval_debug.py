@@ -96,32 +96,103 @@ def test_retrieval(scenario, config, enabled=True):
     # Загружаем project_dir
     project_path = scenario.get('project_path')
     project_dir = None
+    generated_dir = Path(config.data.generated_dir)
+    
+    print(f"🔍 Debugging context files loading:")
+    print(f"   project_path from scenario: {project_path}")
+    print(f"   generated_dir from config: {generated_dir}")
+    
     if project_path:
-        generated_dir = Path(config.data.generated_dir)
         project_dir = generated_dir / project_path
-        if not project_dir.exists():
-            print(f"⚠️  Project directory not found: {project_dir}")
-            project_dir = None
+        print(f"   computed project_dir: {project_dir}")
+        print(f"   project_dir exists: {project_dir.exists()}")
+        if project_dir.exists():
+            # Показываем содержимое директории
+            try:
+                files_in_dir = list(project_dir.rglob("*"))[:10]  # Первые 10 файлов
+                print(f"   files in project_dir (first 10): {[str(f.relative_to(project_dir)) for f in files_in_dir]}")
+            except Exception as e:
+                print(f"   error listing files: {e}")
+        else:
+            # Проверяем, существует ли generated_dir
+            print(f"   generated_dir exists: {generated_dir.exists()}")
+            if generated_dir.exists():
+                # Показываем что есть в generated_dir
+                try:
+                    subdirs = [d for d in generated_dir.iterdir() if d.is_dir()][:5]
+                    print(f"   subdirs in generated_dir (first 5): {[str(d.name) for d in subdirs]}")
+                except Exception as e:
+                    print(f"   error listing subdirs: {e}")
+    else:
+        print(f"   ⚠️  No project_path in scenario")
+    
+    print()
     
     # Загружаем context_files
     context_obj = scenario.get('context_files')
-    context_files_content = {}
-    
+    print(f"🔍 Debugging context_files:")
+    print(f"   context_files type: {type(context_obj)}")
     if isinstance(context_obj, dict):
+        print(f"   context_files dict keys: {list(context_obj.keys())[:5] if context_obj else 'empty'}")
         context_files_content = {
             path: content for path, content in context_obj.items() if isinstance(content, str)
         }
-        print(f"📚 Loaded {len(context_files_content)} files from dict context_files")
-    elif isinstance(context_obj, list) and project_dir:
-        context_files_content = load_context_files_from_scenario(
-            scenario,
-            project_dir=project_dir,
-            include_all_project_files=True,
-        )
-        print(f"📚 Loaded {len(context_files_content)} files from project directory")
+        print(f"   📚 Loaded {len(context_files_content)} files from dict context_files")
+        if len(context_files_content) == 0:
+            print(f"   ⚠️  All values in dict are not strings or dict is empty")
+            # Показываем типы значений
+            if context_obj:
+                sample_key = list(context_obj.keys())[0]
+                sample_value = context_obj[sample_key]
+                print(f"   Sample value type for key '{sample_key}': {type(sample_value)}")
+    elif isinstance(context_obj, list):
+        print(f"   context_files list length: {len(context_obj) if context_obj else 0}")
+        if context_obj:
+            print(f"   First few paths: {context_obj[:5]}")
+        if project_dir and project_dir.exists():
+            print(f"   Attempting to load from project_dir...")
+            try:
+                context_files_content = load_context_files_from_scenario(
+                    scenario,
+                    project_dir=project_dir,
+                    include_all_project_files=True,
+                )
+                print(f"   📚 Loaded {len(context_files_content)} files from project directory")
+            except Exception as e:
+                print(f"   ❌ Error loading from project_dir: {e}")
+                import traceback
+                traceback.print_exc()
+                context_files_content = {}
+        else:
+            print(f"   ⚠️  Cannot load from project_dir (not available or doesn't exist)")
+            context_files_content = {}
+    elif context_obj is None:
+        print(f"   ⚠️  context_files is None")
+        if project_dir and project_dir.exists():
+            print(f"   Attempting to load all project files...")
+            try:
+                context_files_content = load_context_files_from_scenario(
+                    scenario,
+                    project_dir=project_dir,
+                    include_all_project_files=True,
+                )
+                print(f"   📚 Loaded {len(context_files_content)} files from project directory")
+            except Exception as e:
+                print(f"   ❌ Error loading all project files: {e}")
+                import traceback
+                traceback.print_exc()
+                context_files_content = {}
+        else:
+            context_files_content = {}
+    else:
+        print(f"   ⚠️  Unknown context_files type: {type(context_obj)}")
+        context_files_content = {}
+    
+    print()
     
     if not context_files_content:
         print("⚠️  No context files available for retrieval")
+        print("   This is why retrieval returns empty result!")
         return None, None
     
     print(f"📊 Total context files: {len(context_files_content)}")
