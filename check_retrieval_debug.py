@@ -261,20 +261,26 @@ def main():
     config_with = Path("config_with_retrieval_test.yaml")
     config_without = Path("config_without_retrieval_test.yaml")
     
-    # Создаем временные конфиги
-    base_config = Config.from_yaml("config.yaml")
+    # Создаем временные конфиги - читаем базовый YAML и модифицируем
+    base_config_path = Path("config.yaml")
+    with open(base_config_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
     
     # Конфиг с ретривером
-    config_dict_with = base_config.to_dict()
+    config_dict_with = config_dict.copy()
+    if 'retrieval' not in config_dict_with:
+        config_dict_with['retrieval'] = {}
     config_dict_with['retrieval']['enabled'] = True
     with open(config_with, 'w') as f:
-        yaml.dump(config_dict_with, f, default_flow_style=False)
+        yaml.dump(config_dict_with, f, default_flow_style=False, sort_keys=False)
     
     # Конфиг без ретривера
-    config_dict_without = base_config.to_dict()
+    config_dict_without = config_dict.copy()
+    if 'retrieval' not in config_dict_without:
+        config_dict_without['retrieval'] = {}
     config_dict_without['retrieval']['enabled'] = False
     with open(config_without, 'w') as f:
-        yaml.dump(config_dict_without, f, default_flow_style=False)
+        yaml.dump(config_dict_without, f, default_flow_style=False, sort_keys=False)
     
     enabled_with, difficulties_with = check_retrieval_enabled(config_with)
     enabled_without, difficulties_without = check_retrieval_enabled(config_without)
