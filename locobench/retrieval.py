@@ -30,6 +30,15 @@ except ImportError:  # pragma: no cover - optional dependency
         "sentence-transformers not available. Retrieval will fall back to keyword-based method."
     )
 
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    BM25_AVAILABLE = False
+    logger.debug(
+        "rank-bm25 not available. Hybrid search will use keyword-based fallback."
+    )
+
 if TYPE_CHECKING:  # pragma: no cover - for type checkers only
     from sentence_transformers import SentenceTransformer as _SentenceTransformerType
 
@@ -769,6 +778,166 @@ def _extract_key_entities_and_concepts(task_prompt: str) -> Dict[str, List[str]]
     }
 
 
+def _generate_multi_queries(task_prompt: str, num_queries: int = 5) -> List[str]:
+    """
+    Генерирует несколько вариантов запроса из оригинального промпта для Multi-Query Retrieval.
+    Использует различные стратегии переформулирования запроса.
+    
+    Args:
+        task_prompt: Оригинальный промпт задачи
+        num_queries: Количество вариантов запроса для генерации
+    
+    Returns:
+        Список вариантов запроса
+    """
+    queries = [task_prompt]  # Всегда включаем оригинальный запрос
+    
+    # Извлекаем ключевые компоненты
+    extracted = _extract_key_entities_and_concepts(task_prompt)
+    
+    # Стратегия 1: Запрос с акцентом на сущности
+    if extracted['entities']:
+        entities_query = f"{task_prompt} Focus on: {', '.join(extracted['entities'][:5])}"
+        queries.append(entities_query)
+    
+    # Стратегия 2: Запрос с акцентом на действия
+    if extracted['actions']:
+        actions_query = f"{task_prompt} Actions needed: {', '.join(extracted['actions'][:5])}"
+        queries.append(actions_query)
+    
+    # Стратегия 3: Запрос с акцентом на концепции
+    if extracted['concepts']:
+        concepts_query = f"{task_prompt} Related concepts: {', '.join(extracted['concepts'][:5])}"
+        queries.append(concepts_query)
+    
+    # Стратегия 4: Упрощенный запрос (только ключевые слова)
+    keywords = []
+    keywords.extend(extracted['entities'][:3])
+    keywords.extend(extracted['actions'][:2])
+    keywords.extend(extracted['concepts'][:2])
+    if keywords:
+        simplified_query = ' '.join(keywords)
+        queries.append(simplified_query)
+    
+    # Стратегия 5: Расширенный запрос с синонимами
+    expanded_query = _expand_query_for_retrieval(task_prompt)
+    if expanded_query != task_prompt:
+        queries.append(expanded_query)
+    
+    # Стратегия 6: Вопросный формат (для comprehension tasks)
+    if any(word in task_prompt.lower() for word in ['how', 'what', 'why', 'where', 'when']):
+        # Уже в вопросном формате, добавляем как есть
+        pass
+    else:
+        # Преобразуем в вопрос
+        question_query = f"How to {task_prompt.lower()}? What is needed for {task_prompt.lower()}?"
+        queries.append(question_query)
+    
+    # Стратегия 7: Технический фокус (для implementation tasks)
+    if any(word in task_prompt.lower() for word in ['implement', 'add', 'create', 'build']):
+        tech_query = f"Implementation details: {task_prompt}. Code structure and patterns needed."
+        queries.append(tech_query)
+    
+    # Ограничиваем количество запросов
+    queries = queries[:num_queries]
+    
+    # Удаляем дубликаты, сохраняя порядок
+    seen = set()
+    unique_queries = []
+    for q in queries:
+        q_hash = hash(q)
+        if q_hash not in seen:
+            seen.add(q_hash)
+            unique_queries.append(q)
+    
+    logger.debug(f"Generated {len(unique_queries)} multi-queries from original prompt")
+    return unique_queries
+
+
+def _rank_files_with_bm25(
+    task_prompt: str,
+    candidate_files: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Ранжирует файлы используя BM25 (keyword-based ranking).
+    
+    Args:
+        task_prompt: Промпт задачи
+        candidate_files: Список файлов-кандидатов
+    
+    Returns:
+        Отсортированный список файлов с BM25 scores
+    """
+    if not BM25_AVAILABLE:
+        logger.warning("BM25 not available, falling back to simple keyword matching")
+        return _rank_files_with_keywords(task_prompt, candidate_files)
+    
+    if not candidate_files:
+        return []
+    
+    # Токенизируем промпт
+    prompt_tokens = task_prompt.lower().split()
+    
+    # Токенизируем содержимое файлов
+    file_corpus = []
+    for file_info in candidate_files:
+        content = file_info.get("content", "")
+        # Простая токенизация: разбиваем по словам и убираем короткие токены
+        tokens = [t.lower() for t in re.findall(r'\b\w+\b', content) if len(t) > 2]
+        file_corpus.append(tokens)
+    
+    if not file_corpus:
+        return candidate_files
+    
+    # Создаем BM25 индекс
+    try:
+        bm25 = BM25Okapi(file_corpus)
+        # Получаем BM25 scores
+        scores = bm25.get_scores(prompt_tokens)
+        
+        # Добавляем scores к файлам
+        for idx, file_info in enumerate(candidate_files):
+            file_info["bm25_score"] = float(scores[idx])
+        
+        # Сортируем по BM25 score
+        return sorted(candidate_files, key=lambda info: info.get("bm25_score", 0.0), reverse=True)
+    except Exception as e:
+        logger.warning(f"BM25 ranking failed: {e}, falling back to keyword matching")
+        return _rank_files_with_keywords(task_prompt, candidate_files)
+
+
+def _rank_files_with_keywords(
+    task_prompt: str,
+    candidate_files: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Простое ранжирование по ключевым словам (fallback для BM25).
+    """
+    if not candidate_files:
+        return []
+    
+    # Извлекаем ключевые слова из промпта
+    prompt_lower = task_prompt.lower()
+    keywords = set(re.findall(r'\b[a-zA-Z]{4,}\b', prompt_lower))
+    
+    # Убираем стоп-слова
+    stop_words = {
+        "that", "this", "with", "from", "file", "code", "function",
+        "class", "method", "should", "must", "need", "implement",
+        "create", "add", "make", "using", "when", "where", "what",
+    }
+    keywords = keywords - stop_words
+    
+    # Подсчитываем совпадения для каждого файла
+    for file_info in candidate_files:
+        content_lower = file_info.get("content", "").lower()
+        matches = sum(1 for keyword in keywords if keyword in content_lower)
+        # Нормализуем score
+        file_info["bm25_score"] = float(matches) / max(len(keywords), 1)
+    
+    return sorted(candidate_files, key=lambda info: info.get("bm25_score", 0.0), reverse=True)
+
+
 def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
     """
     Расширяет запрос для ритривера синонимами и связанными терминами.
@@ -938,6 +1107,9 @@ def retrieve_relevant_embedding(
     smart_chunking: bool = True,
     chunks_per_file: int = 5,
     chunk_size: int = 2000,
+    use_multi_query: bool = True,
+    use_hybrid_search: bool = True,
+    hybrid_alpha: float = 0.7,
 ) -> str:
     """
     Retrieve the most relevant project files using embeddings and return them as context.
@@ -1079,8 +1251,156 @@ def retrieve_relevant_embedding(
         len(extracted_info['concepts'])
     )
     
-    # Rank files using expanded query for better semantic matching
-    ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates, expanded_query=expanded_query)
+    # Multi-Query Retrieval: Generate multiple query variants and combine results
+    if use_multi_query:
+        multi_queries = _generate_multi_queries(task_prompt, num_queries=5)
+        logger.debug(f"🔍 Multi-query retrieval: using {len(multi_queries)} query variants")
+        
+        # Rank files for each query variant
+        all_ranked_files = []
+        query_weights = []  # Веса для каждого запроса (первый запрос - оригинальный, имеет больший вес)
+        
+        for idx, query_variant in enumerate(multi_queries):
+            variant_expanded = _expand_query_for_retrieval(query_variant, task_type_name)
+            variant_ranked = _rank_files_with_embeddings(model, query_variant, candidates, expanded_query=variant_expanded)
+            all_ranked_files.append(variant_ranked)
+            # Первый запрос (оригинальный) имеет больший вес
+            weight = 1.0 if idx == 0 else 0.8
+            query_weights.append(weight)
+        
+        # Combine results: improved aggregation with RRF and weighted similarity
+        file_scores: Dict[str, float] = {}
+        file_info_map: Dict[str, Dict[str, Any]] = {}
+        file_rrf_scores: Dict[str, float] = {}
+        file_similarity_scores: Dict[str, List[float]] = {}
+        
+        for query_idx, ranked_list in enumerate(all_ranked_files):
+            query_weight = query_weights[query_idx]
+            
+            for rank_idx, file_info in enumerate(ranked_list):
+                file_path = _normalize_relative_path(file_info["path"])
+                similarity = file_info.get("similarity", 0.0)
+                
+                # Reciprocal Rank Fusion: score = 1 / (rank + k)
+                # Используем k=20 для большей чувствительности к рангу
+                rank = rank_idx + 1
+                rrf_score = 1.0 / (rank + 20)  # k=20 для лучшей чувствительности
+                
+                if file_path not in file_scores:
+                    file_scores[file_path] = 0.0
+                    file_rrf_scores[file_path] = 0.0
+                    file_similarity_scores[file_path] = []
+                    file_info_map[file_path] = file_info.copy()
+                
+                # Накопление RRF scores (взвешенное)
+                file_rrf_scores[file_path] += rrf_score * query_weight
+                
+                # Накопление similarity scores для усреднения
+                file_similarity_scores[file_path].append(similarity * query_weight)
+        
+        # Комбинируем RRF и similarity scores
+        for file_path in file_scores:
+            # Среднее similarity по всем запросам (взвешенное)
+            avg_similarity = sum(file_similarity_scores[file_path]) / len(file_similarity_scores[file_path]) if file_similarity_scores[file_path] else 0.0
+            
+            # Максимальное similarity (лучший результат среди всех запросов)
+            max_similarity = max(file_similarity_scores[file_path]) if file_similarity_scores[file_path] else 0.0
+            
+            # Нормализуем RRF score (максимальный RRF = 1.0 для top-1 файла)
+            max_rrf = max(file_rrf_scores.values()) if file_rrf_scores else 1.0
+            normalized_rrf = file_rrf_scores[file_path] / max_rrf if max_rrf > 0 else 0.0
+            
+            # Комбинируем: 60% max_similarity (лучший match), 30% avg_similarity (стабильность), 10% RRF (позиция)
+            combined_score = (max_similarity * 0.6 + avg_similarity * 0.3 + normalized_rrf * 0.1)
+            file_scores[file_path] = combined_score
+        
+        # Sort by combined score
+        ranked_files = []
+        for file_path, combined_score in sorted(file_scores.items(), key=lambda x: x[1], reverse=True):
+            file_info = file_info_map[file_path]
+            file_info["similarity"] = combined_score
+            file_info["multi_query_score"] = combined_score
+            ranked_files.append(file_info)
+        
+        logger.debug(f"✅ Multi-query retrieval: combined {len(ranked_files)} files from {len(multi_queries)} queries")
+    else:
+        # Single query retrieval (original behavior)
+        ranked_files = _rank_files_with_embeddings(model, task_prompt, candidates, expanded_query=expanded_query)
+    
+    # Hybrid Search: Combine semantic (embeddings) and keyword (BM25) results
+    if use_hybrid_search and len(candidates) > 0:
+        logger.debug("🔍 Hybrid search: combining semantic and BM25 results")
+        
+        # Get BM25 rankings
+        bm25_ranked = _rank_files_with_bm25(task_prompt, candidates.copy())
+        
+        # Improved normalization: use min-max normalization with smoothing
+        semantic_scores = [f.get("similarity", 0.0) for f in ranked_files] if ranked_files else []
+        bm25_scores = [f.get("bm25_score", 0.0) for f in bm25_ranked] if bm25_ranked else []
+        
+        # Normalize semantic scores
+        if semantic_scores:
+            min_semantic = min(semantic_scores)
+            max_semantic = max(semantic_scores)
+            range_semantic = max_semantic - min_semantic if max_semantic > min_semantic else 1.0
+            
+            for f in ranked_files:
+                raw_score = f.get("similarity", 0.0)
+                # Min-max normalization with smoothing (add small epsilon to avoid division by zero)
+                normalized = (raw_score - min_semantic) / range_semantic if range_semantic > 0 else 0.0
+                # Apply softmax-like transformation for better distribution
+                f["normalized_semantic"] = normalized ** 0.8  # Power scaling for better distribution
+        else:
+            for f in ranked_files:
+                f["normalized_semantic"] = 0.0
+        
+        # Normalize BM25 scores
+        if bm25_scores:
+            min_bm25 = min(bm25_scores)
+            max_bm25 = max(bm25_scores)
+            range_bm25 = max_bm25 - min_bm25 if max_bm25 > min_bm25 else 1.0
+            
+            for f in bm25_ranked:
+                raw_score = f.get("bm25_score", 0.0)
+                normalized = (raw_score - min_bm25) / range_bm25 if range_bm25 > 0 else 0.0
+                # Apply softmax-like transformation
+                f["normalized_bm25"] = normalized ** 0.8
+        else:
+            for f in bm25_ranked:
+                f["normalized_bm25"] = 0.0
+        
+        # Create file map for hybrid scoring
+        hybrid_scores: Dict[str, float] = {}
+        hybrid_info: Dict[str, Dict[str, Any]] = {}
+        
+        # Add semantic scores with weights
+        for file_info in ranked_files:
+            file_path = _normalize_relative_path(file_info["path"])
+            semantic_score = file_info.get("normalized_semantic", 0.0)
+            hybrid_scores[file_path] = semantic_score * hybrid_alpha
+            hybrid_info[file_path] = file_info.copy()
+        
+        # Add BM25 scores (combine with semantic)
+        for file_info in bm25_ranked:
+            file_path = _normalize_relative_path(file_info["path"])
+            bm25_score = file_info.get("normalized_bm25", 0.0) * (1.0 - hybrid_alpha)
+            
+            if file_path in hybrid_scores:
+                # Boost files that appear in both rankings
+                hybrid_scores[file_path] = hybrid_scores[file_path] * 1.2 + bm25_score
+            else:
+                hybrid_scores[file_path] = bm25_score
+                hybrid_info[file_path] = file_info.copy()
+        
+        # Re-rank by hybrid score
+        ranked_files = []
+        for file_path, hybrid_score in sorted(hybrid_scores.items(), key=lambda x: x[1], reverse=True):
+            file_info = hybrid_info[file_path]
+            file_info["similarity"] = hybrid_score
+            file_info["hybrid_score"] = hybrid_score
+            ranked_files.append(file_info)
+        
+        logger.debug(f"✅ Hybrid search: combined semantic (α={hybrid_alpha}) and BM25 (1-α={1-hybrid_alpha})")
     
     # Boost architectural files BEFORE selection for architectural tasks
     if is_architectural_task:
@@ -1599,6 +1919,9 @@ def retrieve_relevant(
     smart_chunking: bool = True,
     chunks_per_file: int = 5,
     retrieval_chunk_size: int = 2000,
+    use_multi_query: bool = True,
+    use_hybrid_search: bool = True,
+    hybrid_alpha: float = 0.7,
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -1614,6 +1937,9 @@ def retrieve_relevant(
             smart_chunking=smart_chunking,
             chunks_per_file=chunks_per_file,
             chunk_size=retrieval_chunk_size,
+            use_multi_query=use_multi_query,
+            use_hybrid_search=use_hybrid_search,
+            hybrid_alpha=hybrid_alpha,
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")

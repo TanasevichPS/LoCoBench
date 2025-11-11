@@ -19,9 +19,6 @@ def create_config_with_retrieval(base_config_path, output_path, timestamp):
     # Включаем ритривер
     config['retrieval']['enabled'] = True
     
-    # Изменяем output_dir для изоляции чекпоинтов
-    config['data']['output_dir'] = f"./data/output_with_retrieval_{timestamp}"
-    
     with open(output_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     
@@ -36,10 +33,7 @@ def create_config_without_retrieval(base_config_path, output_path, timestamp):
     
     # Отключаем ритривер
     config['retrieval']['enabled'] = False
-    
-    # Изменяем output_dir для изоляции чекпоинтов
-    config['data']['output_dir'] = f"./data/output_without_retrieval_{timestamp}"
-    
+
     with open(output_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     
@@ -73,7 +67,6 @@ def cleanup_intermediate_results(config_path):
     absolute_intermediate_paths = [
         Path("/srv/nfs/VESO/home/polina/trsh/LoCoBench/intermediate_results"),
         Path("./intermediate_results"),
-        Path("data/output/intermediate_results"),
     ]
     
     for abs_path in absolute_intermediate_paths:
@@ -160,23 +153,7 @@ def main():
     create_config_without_retrieval(base_config, config_without, timestamp)
     print()
     
-    # ШАГ 1: Оценка с ритривером
-    output_with = results_with / "evaluation_results.json"
-    success_with = run_evaluation(
-        config_with,
-        model,
-        output_with,
-        "STEP 1: Evaluation WITH Retrieval"
-    )
-    
-    if not success_with:
-        print("\n❌ Evaluation with retrieval failed. Stopping.")
-        sys.exit(1)
-    
-    print("\n⏳ Waiting 5 seconds before next evaluation...")
-    import time
-    time.sleep(5)
-    
+
     # ШАГ 2: Оценка без ритривера
     output_without = results_without / "evaluation_results.json"
     success_without = run_evaluation(
@@ -189,6 +166,26 @@ def main():
     if not success_without:
         print("\n❌ Evaluation without retrieval failed.")
         sys.exit(1)
+    
+
+    print("\n⏳ Waiting 5 seconds before next evaluation...")
+    import time
+    time.sleep(5)
+
+
+    # ШАГ 1: Оценка с ритривером
+    output_with = results_with / "evaluation_results.json"
+    success_with = run_evaluation(
+        config_with,
+        model,
+        output_with,
+        "STEP 1: Evaluation WITH Retrieval"
+    )
+    
+    if not success_with:
+        print("\n❌ Evaluation with retrieval failed. Stopping.")
+        sys.exit(1)
+
     
     # Итоги
     print("\n" + "="*60)

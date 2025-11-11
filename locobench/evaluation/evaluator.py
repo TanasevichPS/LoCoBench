@@ -2370,6 +2370,9 @@ class LoCoBenchEvaluator:
                     smart_chunking=use_smart_chunking,
                     chunks_per_file=effective_chunks_per_file,
                     retrieval_chunk_size=int(effective_chunk_size),
+                    use_multi_query=getattr(retrieval_config, 'use_multi_query', True),
+                    use_hybrid_search=getattr(retrieval_config, 'use_hybrid_search', True),
+                    hybrid_alpha=getattr(retrieval_config, 'hybrid_alpha', 0.7),
                 )
 
                 if retrieved_context:
