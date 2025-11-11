@@ -1148,6 +1148,7 @@ def retrieve_relevant_embedding(
     use_multi_query: bool = True,
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
+    task_category: Optional[str] = None,  # Add task_category parameter
 ) -> str:
     """
     Retrieve the most relevant project files using embeddings and return them as context.
@@ -1192,77 +1193,99 @@ def retrieve_relevant_embedding(
 
     # MULTI-LEVEL RETRIEVAL STRATEGY (adaptive based on task type):
     # Detect task type and adjust strategy accordingly
+    # Use task_category if provided, otherwise detect from prompt
     
     task_prompt_lower = task_prompt.lower()
+    task_category_lower = (task_category or '').lower()
     
-    # Detect task type
-    is_architectural_task = any(
-        keyword in task_prompt_lower 
-        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design', 'cross file refactor', 'refactoring']
+    # Detect task type - prioritize task_category if available
+    is_architectural_task = (
+        'architectural' in task_category_lower or 'refactor' in task_category_lower or
+        any(keyword in task_prompt_lower 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design', 'cross file refactor', 'refactoring'])
     )
     
-    is_code_comprehension_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain', 'bug investigation', 'investigate', 'debug']
+    is_code_comprehension_task = (
+        'comprehension' in task_category_lower or 'bug' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain', 'bug investigation', 'investigate', 'debug'])
     )
     
-    is_security_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack']
+    is_security_task = (
+        'security' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack'])
     )
     
-    is_feature_implementation_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
+    is_feature_implementation_task = (
+        'feature' in task_category_lower or 'implementation' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional'])
     )
     
-    is_integration_testing_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['integration test', 'integration testing', 'test integration', 'integration', 'test suite', 'test case']
+    is_integration_testing_task = (
+        'integration' in task_category_lower or 'test' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['integration test', 'integration testing', 'test integration', 'integration', 'test suite', 'test case'])
     )
     
-    is_multi_session_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['multi session', 'multi-session', 'session', 'multiple sessions', 'ongoing']
+    is_multi_session_task = (
+        'multi' in task_category_lower or 'session' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['multi session', 'multi-session', 'session', 'multiple sessions', 'ongoing'])
     )
     
-    is_bug_investigation_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['bug', 'investigate', 'investigation', 'debug', 'error', 'issue', 'problem', 'fix bug', 'trace bug']
+    is_bug_investigation_task = (
+        'bug' in task_category_lower or 'investigation' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['bug', 'investigate', 'investigation', 'debug', 'error', 'issue', 'problem', 'fix bug', 'trace bug'])
     )
     
-    is_refactoring_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['refactor', 'refactoring', 'restructure', 'reorganize', 'cross file', 'cross-file', 'multi-file']
+    is_refactoring_task = (
+        'refactor' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['refactor', 'refactoring', 'restructure', 'reorganize', 'cross file', 'cross-file', 'multi-file'])
     )
     
-    # Apply multipliers based on task type (after detection)
+    # Apply multipliers based on task type (after detection) - MORE AGGRESSIVE
     original_selected_count = selected_count
     if is_architectural_task or is_refactoring_task:
         # For architectural and refactoring tasks, increase file count more aggressively
         # These tasks need more context to understand system structure and dependencies
-        architectural_multiplier = 1.70  # Increased from 1.60 to 1.70 (70% more files)
+        architectural_multiplier = 1.85  # Increased from 1.70 to 1.85 (85% more files)
         selected_count = int(selected_count * architectural_multiplier)
         selected_count = min(selected_count, len(candidates))
         logger.debug("🏗️ Architectural/Refactoring task: increased file count from %d to %d (%.1fx)", 
                     original_selected_count, selected_count, architectural_multiplier)
     elif is_code_comprehension_task or is_bug_investigation_task:
         # For code comprehension and bug investigation: more files for tracing flow
-        selected_count = int(selected_count * 1.35)  # Increased from 1.25 to 1.35
+        selected_count = int(selected_count * 1.50)  # Increased from 1.35 to 1.50
         selected_count = min(selected_count, len(candidates))
-        logger.debug("🔍 Code comprehension/Bug investigation: increased file count from %d to %d (1.35x)", 
+        logger.debug("🔍 Code comprehension/Bug investigation: increased file count from %d to %d (1.50x)", 
                     original_selected_count, selected_count)
     elif is_integration_testing_task:
         # For integration testing: need to see more files to understand integration points
-        selected_count = int(selected_count * 1.30)
+        selected_count = int(selected_count * 1.40)  # Increased from 1.30 to 1.40
         selected_count = min(selected_count, len(candidates))
-        logger.debug("🧪 Integration testing: increased file count from %d to %d (1.30x)", 
+        logger.debug("🧪 Integration testing: increased file count from %d to %d (1.40x)", 
                     original_selected_count, selected_count)
     elif is_multi_session_task:
         # For multi-session: moderate increase
+        selected_count = int(selected_count * 1.30)  # Increased from 1.20 to 1.30
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("📚 Multi-session: increased file count from %d to %d (1.30x)", 
+                    original_selected_count, selected_count)
+    elif is_security_task:
+        # For security: increase file count
+        selected_count = int(selected_count * 1.25)
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🔒 Security: increased file count from %d to %d (1.25x)", 
+                    original_selected_count, selected_count)
+    elif is_feature_implementation_task:
+        # For feature implementation: increase file count
         selected_count = int(selected_count * 1.20)
         selected_count = min(selected_count, len(candidates))
-        logger.debug("📚 Multi-session: increased file count from %d to %d (1.20x)", 
+        logger.debug("⚙️ Feature implementation: increased file count from %d to %d (1.20x)", 
                     original_selected_count, selected_count)
     
     # Optimized adaptive ratios based on task type
@@ -2092,6 +2115,7 @@ def retrieve_relevant(
     use_multi_query: bool = True,
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
+    task_category: Optional[str] = None,  # Add task_category parameter
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -2110,6 +2134,7 @@ def retrieve_relevant(
             use_multi_query=use_multi_query,
             use_hybrid_search=use_hybrid_search,
             hybrid_alpha=hybrid_alpha,
+            task_category=task_category,  # Pass task_category
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")
