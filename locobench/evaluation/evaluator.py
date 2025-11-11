@@ -2333,22 +2333,39 @@ class LoCoBenchEvaluator:
                 # Adjust retrieval parameters based on task category
                 task_category = scenario.get('task_category', '').lower()
                 
-                # For architectural_understanding, we need broader context
-                # Architectural tasks benefit from seeing complete files rather than chunks
-                # to understand relationships and patterns
-                if task_category == 'architectural_understanding':
-                    effective_top_percent = min(0.50, retrieval_config.top_percent * 2.27)  # Increased from 0.40 to 0.50 (2.27x multiplier)
-                    effective_chunks_per_file = 0  # Use full files instead of chunks for architectural understanding
+                # For architectural_understanding and cross_file_refactoring, we need broader context
+                if task_category in ['architectural_understanding', 'cross_file_refactoring']:
+                    effective_top_percent = min(0.52, retrieval_config.top_percent * 2.36)  # Increased from 0.50 to 0.52
+                    effective_chunks_per_file = 0  # Use full files instead of chunks
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = min(180000, retrieval_config.max_context_tokens * 1.8)  # Increased from 150000 to 180000
+                    effective_max_context = min(190000, retrieval_config.max_context_tokens * 1.9)  # Increased from 180000 to 190000
                     use_smart_chunking = False  # Disable chunking for architectural tasks - use full files
                     logger.info(
-                        "🏗️ Architectural understanding task: using full files strategy "
+                        "🏗️ Architectural/Refactoring task: using full files strategy "
                         "(top_percent=%.2f, smart_chunking=%s, max_context=%d)",
                         effective_top_percent,
                         use_smart_chunking,
                         effective_max_context,
                     )
+                elif task_category in ['code_comprehension', 'bug_investigation']:
+                    effective_top_percent = retrieval_config.top_percent * 1.15  # Increase for comprehension/bug investigation
+                    effective_chunks_per_file = min(12, getattr(retrieval_config, 'chunks_per_file', 8) + 4)  # Increase by 4 for comprehension
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = min(120000, retrieval_config.max_context_tokens * 1.2)  # More context for tracing
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                    logger.info(
+                        "🔍 Comprehension/Bug investigation task: using enhanced chunking "
+                        "(top_percent=%.2f, chunks_per_file=%d, max_context=%d)",
+                        effective_top_percent,
+                        effective_chunks_per_file,
+                        effective_max_context,
+                    )
+                elif task_category == 'integration_testing':
+                    effective_top_percent = retrieval_config.top_percent * 1.10  # Slight increase
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 else:
                     effective_top_percent = retrieval_config.top_percent
                     # For comprehension tasks, increase chunks_per_file

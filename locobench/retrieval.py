@@ -592,8 +592,8 @@ def _find_dependent_files(
             selected_paths,
             dependency_graph,
             reverse_graph,
-            max_depth=3 if is_architectural_task else 3,  # Increased from 2 to 3 for architectural
-            max_files_per_level=25 if is_architectural_task else 20  # Increased from 20 to 25 for architectural
+            max_depth=3 if (is_architectural_task or is_refactoring_task) else (3 if (is_code_comprehension_task or is_bug_investigation_task) else 2),  # Increased depth for architectural/refactoring and comprehension/bug investigation
+            max_files_per_level=28 if (is_architectural_task or is_refactoring_task) else (25 if (is_code_comprehension_task or is_bug_investigation_task) else 20)  # Increased files per level
         )
         dependent_paths.update(expanded_paths)
         # Удалить исходные файлы из зависимостей
@@ -1198,12 +1198,12 @@ def retrieve_relevant_embedding(
     # Detect task type
     is_architectural_task = any(
         keyword in task_prompt_lower 
-        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design']
+        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design', 'cross file refactor', 'refactoring']
     )
     
     is_code_comprehension_task = any(
         keyword in task_prompt_lower
-        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain']
+        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain', 'bug investigation', 'investigate', 'debug']
     )
     
     is_security_task = any(
@@ -1216,36 +1216,68 @@ def retrieve_relevant_embedding(
         for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
     )
     
+    is_integration_testing_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['integration test', 'integration testing', 'test integration', 'integration', 'test suite', 'test case']
+    )
+    
+    is_multi_session_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['multi session', 'multi-session', 'session', 'multiple sessions', 'ongoing']
+    )
+    
+    is_bug_investigation_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['bug', 'investigate', 'investigation', 'debug', 'error', 'issue', 'problem', 'fix bug', 'trace bug']
+    )
+    
+    is_refactoring_task = any(
+        keyword in task_prompt_lower
+        for keyword in ['refactor', 'refactoring', 'restructure', 'reorganize', 'cross file', 'cross-file', 'multi-file']
+    )
+    
     # Apply multipliers based on task type (after detection)
     original_selected_count = selected_count
-    if is_architectural_task:
-        # For architectural tasks, increase file count more aggressively
-        # Architectural tasks need more context to understand system structure
-        architectural_multiplier = 1.60  # Increased from 1.40 to 1.60 (60% more files)
+    if is_architectural_task or is_refactoring_task:
+        # For architectural and refactoring tasks, increase file count more aggressively
+        # These tasks need more context to understand system structure and dependencies
+        architectural_multiplier = 1.70  # Increased from 1.60 to 1.70 (70% more files)
         selected_count = int(selected_count * architectural_multiplier)
         selected_count = min(selected_count, len(candidates))
-        logger.debug("🏗️ Architectural task: increased file count from %d to %d (%.1fx)", 
+        logger.debug("🏗️ Architectural/Refactoring task: increased file count from %d to %d (%.1fx)", 
                     original_selected_count, selected_count, architectural_multiplier)
-    elif is_code_comprehension_task:
-        # Moderate increase for code comprehension to capture more flow context
-        selected_count = int(selected_count * 1.25)  # Increased from 1.20 to 1.25
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        # For code comprehension and bug investigation: more files for tracing flow
+        selected_count = int(selected_count * 1.35)  # Increased from 1.25 to 1.35
         selected_count = min(selected_count, len(candidates))
-        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.25x)", 
+        logger.debug("🔍 Code comprehension/Bug investigation: increased file count from %d to %d (1.35x)", 
+                    original_selected_count, selected_count)
+    elif is_integration_testing_task:
+        # For integration testing: need to see more files to understand integration points
+        selected_count = int(selected_count * 1.30)
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🧪 Integration testing: increased file count from %d to %d (1.30x)", 
+                    original_selected_count, selected_count)
+    elif is_multi_session_task:
+        # For multi-session: moderate increase
+        selected_count = int(selected_count * 1.20)
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("📚 Multi-session: increased file count from %d to %d (1.20x)", 
                     original_selected_count, selected_count)
     
     # Optimized adaptive ratios based on task type
-    if is_architectural_task:
-        # For architectural tasks: more dependencies for structure understanding
-        level1_ratio = 0.50  # Reduced from 0.55 to allow more dependencies
-        level2_ratio = 0.40  # Increased from 0.35 to 0.40 (more dependencies)
+    if is_architectural_task or is_refactoring_task:
+        # For architectural and refactoring tasks: more dependencies for structure understanding
+        level1_ratio = 0.48  # Reduced from 0.50 to allow even more dependencies
+        level2_ratio = 0.42  # Increased from 0.40 to 0.42 (more dependencies)
         level3_ratio = 0.10  # Important files
-        logger.debug("🏗️ Architectural task detected: L1=50%, L2=40%, L3=10%")
-    elif is_code_comprehension_task:
-        # For code comprehension: more dependencies for tracing flow
-        level1_ratio = 0.60  # Reduced from 0.65 to allow more dependencies
-        level2_ratio = 0.35  # Increased from 0.30 to 0.35 (more dependencies for tracing)
+        logger.debug("🏗️ Architectural/Refactoring task detected: L1=48%, L2=42%, L3=10%")
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        # For code comprehension and bug investigation: more dependencies for tracing flow
+        level1_ratio = 0.58  # Reduced from 0.60 to allow more dependencies
+        level2_ratio = 0.37  # Increased from 0.35 to 0.37 (more dependencies for tracing)
         level3_ratio = 0.05  # Less important files
-        logger.debug("🔍 Code comprehension task detected: L1=60%, L2=35%, L3=5%")
+        logger.debug("🔍 Code comprehension/Bug investigation task detected: L1=58%, L2=37%, L3=5%")
     elif is_security_task:
         # For security: more semantic (find security-related code)
         level1_ratio = 0.75  # Increased from 0.70 (more semantic)
@@ -1258,6 +1290,18 @@ def retrieve_relevant_embedding(
         level2_ratio = 0.20  # Increased from 0.15 (more dependencies for context)
         level3_ratio = 0.10
         logger.debug("⚙️ Feature implementation task detected: L1=70%, L2=20%, L3=10%")
+    elif is_integration_testing_task:
+        # For integration testing: balanced approach with more dependencies
+        level1_ratio = 0.65
+        level2_ratio = 0.30  # More dependencies to see integration points
+        level3_ratio = 0.05
+        logger.debug("🧪 Integration testing task detected: L1=65%, L2=30%, L3=5%")
+    elif is_multi_session_task:
+        # For multi-session: balanced approach
+        level1_ratio = 0.70
+        level2_ratio = 0.25
+        level3_ratio = 0.05
+        logger.debug("📚 Multi-session task detected: L1=70%, L2=25%, L3=5%")
     else:
         # Default: balanced approach
         level1_ratio = 0.70
@@ -1267,14 +1311,18 @@ def retrieve_relevant_embedding(
     
     # Create optimized retrieval query using prompt engineering
     task_type_name = None
-    if is_architectural_task:
+    if is_architectural_task or is_refactoring_task:
         task_type_name = 'architectural'
-    elif is_code_comprehension_task:
+    elif is_code_comprehension_task or is_bug_investigation_task:
         task_type_name = 'comprehension'
     elif is_security_task:
         task_type_name = 'security'
     elif is_feature_implementation_task:
         task_type_name = 'implementation'
+    elif is_integration_testing_task:
+        task_type_name = 'testing'
+    elif is_multi_session_task:
+        task_type_name = 'multi_session'
     
     # Extract key entities and concepts for better retrieval
     extracted_info = _extract_key_entities_and_concepts(task_prompt)
@@ -1376,14 +1424,18 @@ def retrieve_relevant_embedding(
         
         # Adaptive hybrid_alpha based on task type
         adaptive_hybrid_alpha = hybrid_alpha
-        if is_architectural_task:
-            adaptive_hybrid_alpha = 0.65  # More BM25 for exact matches in architectural tasks
-        elif is_code_comprehension_task:
-            adaptive_hybrid_alpha = 0.70  # Balanced for comprehension
+        if is_architectural_task or is_refactoring_task:
+            adaptive_hybrid_alpha = 0.62  # More BM25 for exact matches in architectural/refactoring tasks
+        elif is_code_comprehension_task or is_bug_investigation_task:
+            adaptive_hybrid_alpha = 0.68  # Balanced for comprehension/bug investigation
         elif is_security_task:
             adaptive_hybrid_alpha = 0.80  # More semantic for conceptual security search
         elif is_feature_implementation_task:
             adaptive_hybrid_alpha = 0.75  # Current value for implementation
+        elif is_integration_testing_task:
+            adaptive_hybrid_alpha = 0.72  # Balanced for integration testing
+        elif is_multi_session_task:
+            adaptive_hybrid_alpha = 0.73  # Balanced for multi-session
         
         logger.debug(f"🔍 Adaptive hybrid_alpha: {adaptive_hybrid_alpha} (task_type={task_type_name})")
         
@@ -1458,8 +1510,8 @@ def retrieve_relevant_embedding(
         
         logger.debug(f"✅ Hybrid search: combined semantic (α={adaptive_hybrid_alpha}) and BM25 (1-α={1-adaptive_hybrid_alpha})")
     
-    # Boost architectural files BEFORE selection for architectural tasks
-    if is_architectural_task:
+    # Boost files BEFORE selection based on task type
+    if is_architectural_task or is_refactoring_task:
         architectural_keywords = [
             'interface', 'abstract', 'base', 'config', 'main', 'entry', 
             'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
@@ -1483,10 +1535,10 @@ def retrieve_relevant_embedding(
             # 1. Boost for architectural keywords in path/name (further increased)
             keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
             if keyword_matches > 0:
-                boost += 0.28 + (keyword_matches * 0.04)  # Increased: Base 0.28 + 0.04 per keyword (max ~0.50)
+                boost += 0.30 + (keyword_matches * 0.05)  # Increased: Base 0.30 + 0.05 per keyword
             
             # 2. Boost for architectural patterns in content (increased and extended scan)
-            content_preview = file_info.get("content", "")[:3000]  # Extended to 3000 chars (was 2500)
+            content_preview = file_info.get("content", "")[:3000]  # Extended to 3000 chars
             content_lower = content_preview.lower()
             architectural_patterns = [
                 'interface ', 'abstract class', 'implements', 'extends', 'public class',
@@ -1495,21 +1547,21 @@ def retrieve_relevant_embedding(
             ]
             pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
             if pattern_matches > 0:
-                boost += 0.35 + (pattern_matches * 0.08)  # Increased: Base 0.35 + 0.08 per pattern
+                boost += 0.38 + (pattern_matches * 0.10)  # Increased: Base 0.38 + 0.10 per pattern
             
             # 3. Boost for files with high similarity already (they're likely relevant)
-            if original_sim > 0.15:  # Lowered threshold from 0.18 to 0.15
-                boost += 0.18  # Increased from 0.15
+            if original_sim > 0.14:  # Lowered threshold from 0.15 to 0.14
+                boost += 0.20  # Increased from 0.18
             
             # 4. Boost for files mentioned in task prompt (by name)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.22  # Increased from 0.18
+                boost += 0.25  # Increased from 0.22
             
             # 5. Additional boost for entry points and configuration files
             if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
-                boost += 0.18  # Increased from 0.15
+                boost += 0.20  # Increased from 0.18
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
@@ -1517,22 +1569,63 @@ def retrieve_relevant_embedding(
         
         # Re-rank after boosting
         ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
-        logger.debug("🏗️ Boosted %d architectural files before selection (max boost applied)", boosted_count)
+        logger.debug("🏗️ Boosted %d architectural/refactoring files before selection (max boost applied)", boosted_count)
+    
+    # Boost for comprehension and bug investigation tasks
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        comprehension_keywords = [
+            'trace', 'track', 'follow', 'flow', 'call', 'invoke', 'method', 'function',
+            'execution', 'sequence', 'order', 'path', 'route', 'handler', 'processor',
+            'service', 'controller', 'manager', 'worker', 'thread', 'task'
+        ]
+        
+        task_words = set(task_prompt_lower.split())
+        boosted_count = 0
+        
+        for file_info in ranked_files:
+            file_path_lower = file_info["path"].lower()
+            file_name_lower = Path(file_info["path"]).name.lower()
+            original_sim = file_info.get("similarity", 0.0)
+            boost = 0.0
+            
+            # Boost for flow-related keywords
+            keyword_matches = sum(1 for keyword in comprehension_keywords if keyword in file_path_lower or keyword in file_name_lower)
+            if keyword_matches > 0:
+                boost += 0.20 + (keyword_matches * 0.04)
+            
+            # Boost for files with method calls, function calls in content
+            content_preview = file_info.get("content", "")[:2500]
+            content_lower = content_preview.lower()
+            if any(pattern in content_lower for pattern in ['->', '.', '(', 'call', 'invoke', 'execute']):
+                boost += 0.15
+            
+            # Boost for files mentioned in task prompt
+            file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
+            common_words = task_words.intersection(file_words)
+            if len(common_words) > 0:
+                boost += 0.18
+            
+            if boost > 0:
+                file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
+        
+        ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug("🔍 Boosted %d comprehension/bug investigation files before selection", boosted_count)
     
     # Calculate how many files to select at each level
     # Level 1: Top semantically relevant files
     level1_count = max(1, int(selected_count * level1_ratio))
     
     # For architectural tasks, apply quality filter - only select files with good similarity
-    if is_architectural_task:
-        # Filter to files with similarity > 0.08 (after boost) to ensure quality
+    if is_architectural_task or is_refactoring_task:
+        # Filter to files with similarity > 0.07 (after boost) to ensure quality
         # Lowered threshold to capture more architectural files while maintaining quality
-        quality_threshold = 0.08  # Lowered from 0.10 to capture more files
+        quality_threshold = 0.07  # Lowered from 0.08 to capture more files
         quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
         if len(quality_files) >= level1_count:
             level1_files = quality_files[:level1_count]
             logger.debug(
-                "🏗️ Architectural quality filter: selected %d files with similarity > %.2f",
+                "🏗️ Architectural/Refactoring quality filter: selected %d files with similarity > %.2f",
                 len(level1_files),
                 quality_threshold
             )
@@ -1540,12 +1633,23 @@ def retrieve_relevant_embedding(
             # If not enough quality files, use all available but log warning
             level1_files = ranked_files[:level1_count]
             logger.debug(
-                "🏗️ Architectural: only %d files meet quality threshold, using top %d",
+                "🏗️ Architectural/Refactoring: only %d files meet quality threshold, using top %d",
                 len(quality_files),
                 level1_count
             )
-    else:
-        level1_files = ranked_files[:level1_count]
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        # For comprehension/bug investigation: slightly lower threshold
+        quality_threshold = 0.06
+        quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
+        if len(quality_files) >= level1_count:
+            level1_files = quality_files[:level1_count]
+            logger.debug(
+                "🔍 Comprehension/Bug investigation quality filter: selected %d files with similarity > %.2f",
+                len(level1_files),
+                quality_threshold
+            )
+        else:
+            level1_files = ranked_files[:level1_count]
     
     logger.debug(
         "📊 Multi-level retrieval: Level 1 (semantic) selected %d files",
@@ -1726,20 +1830,30 @@ def retrieve_relevant_embedding(
                 if first_chunk:
                     top_chunks.append(first_chunk)
                 
-                # For architectural tasks, also prioritize first few chunks (class definitions)
-                if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
-                    # Include first 5-6 chunks if they exist (usually contain class/interface definitions)
-                    for i in range(1, min(6, len(file_chunks_sorted_by_pos))):  # Increased from 4 to 6
+                # For architectural and refactoring tasks, prioritize first few chunks (class definitions)
+                if (is_architectural_task or is_refactoring_task) and len(file_chunks_sorted_by_pos) > 1:
+                    # Include first 6-7 chunks if they exist (usually contain class/interface definitions)
+                    for i in range(1, min(7, len(file_chunks_sorted_by_pos))):  # Increased from 6 to 7
                         early_chunk = file_chunks_sorted_by_pos[i]
                         if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
-                            # Stronger boost for early chunks in architectural tasks
-                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.12  # Increased from 0.10
+                            # Stronger boost for early chunks in architectural/refactoring tasks
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.13  # Increased from 0.12
+                            top_chunks.append(early_chunk)
+                
+                # For comprehension and bug investigation tasks, prioritize more chunks for tracing
+                elif (is_code_comprehension_task or is_bug_investigation_task) and len(file_chunks_sorted_by_pos) > 1:
+                    # Include first 4-5 chunks for better flow tracing
+                    for i in range(1, min(5, len(file_chunks_sorted_by_pos))):
+                        early_chunk = file_chunks_sorted_by_pos[i]
+                        if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.10
                             top_chunks.append(early_chunk)
                 
                 # Diversification strategy: select chunks from different parts of the file
                 # Divide file into regions and try to get at least one chunk from each region
                 if len(file_chunks_sorted_by_pos) > 1:
-                    num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
+                    # For comprehension/bug investigation: more regions for better coverage
+                    num_regions = min(4 if (is_code_comprehension_task or is_bug_investigation_task) else 3, chunks_per_file - len(top_chunks))
                     if num_regions > 0:
                         region_size = len(file_chunks_sorted_by_pos) // num_regions
                         
