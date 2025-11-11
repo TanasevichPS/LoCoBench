@@ -126,8 +126,9 @@ class LoCoBenchEvaluator:
         self.checkpoint: Optional[EvaluationCheckpoint] = None
         
         # Create intermediate_results directory if it doesn't exist
-        intermediate_dir = Path("intermediate_results")
-        intermediate_dir.mkdir(exist_ok=True)
+        # Use config.data.output_dir to ensure checkpoints are isolated per evaluation run
+        intermediate_dir = Path(config.data.output_dir) / "intermediate_results"
+        intermediate_dir.mkdir(parents=True, exist_ok=True)
         
         # Model-specific checkpoint files to avoid conflicts between concurrent evaluations
         if model_name:
