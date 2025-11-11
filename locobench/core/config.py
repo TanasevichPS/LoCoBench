@@ -175,7 +175,7 @@ class RetrievalConfig:
     use_hybrid_search: bool = True
     
     # Weight for semantic search vs BM25 in hybrid search (0.0 = BM25 only, 1.0 = semantic only)
-    hybrid_alpha: float = 0.7
+    hybrid_alpha: float = 0.75
 
 
 @dataclass

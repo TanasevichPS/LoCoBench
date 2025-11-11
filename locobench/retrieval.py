@@ -778,7 +778,7 @@ def _extract_key_entities_and_concepts(task_prompt: str) -> Dict[str, List[str]]
     }
 
 
-def _generate_multi_queries(task_prompt: str, num_queries: int = 3) -> List[str]:
+def _generate_multi_queries(task_prompt: str, num_queries: int = 5) -> List[str]:
     """
     Генерирует несколько вариантов запроса из оригинального промпта для Multi-Query Retrieval.
     Использует различные стратегии переформулирования запроса.
@@ -823,6 +823,20 @@ def _generate_multi_queries(task_prompt: str, num_queries: int = 3) -> List[str]
     expanded_query = _expand_query_for_retrieval(task_prompt)
     if expanded_query != task_prompt:
         queries.append(expanded_query)
+    
+    # Стратегия 6: Вопросный формат (для comprehension tasks)
+    if any(word in task_prompt.lower() for word in ['how', 'what', 'why', 'where', 'when']):
+        # Уже в вопросном формате, добавляем как есть
+        pass
+    else:
+        # Преобразуем в вопрос
+        question_query = f"How to {task_prompt.lower()}? What is needed for {task_prompt.lower()}?"
+        queries.append(question_query)
+    
+    # Стратегия 7: Технический фокус (для implementation tasks)
+    if any(word in task_prompt.lower() for word in ['implement', 'add', 'create', 'build']):
+        tech_query = f"Implementation details: {task_prompt}. Code structure and patterns needed."
+        queries.append(tech_query)
     
     # Ограничиваем количество запросов
     queries = queries[:num_queries]
@@ -1239,40 +1253,73 @@ def retrieve_relevant_embedding(
     
     # Multi-Query Retrieval: Generate multiple query variants and combine results
     if use_multi_query:
-        multi_queries = _generate_multi_queries(task_prompt, num_queries=3)
+        multi_queries = _generate_multi_queries(task_prompt, num_queries=5)
         logger.debug(f"🔍 Multi-query retrieval: using {len(multi_queries)} query variants")
         
         # Rank files for each query variant
         all_ranked_files = []
-        for query_variant in multi_queries:
+        query_weights = []  # Веса для каждого запроса (первый запрос - оригинальный, имеет больший вес)
+        
+        for idx, query_variant in enumerate(multi_queries):
             variant_expanded = _expand_query_for_retrieval(query_variant, task_type_name)
             variant_ranked = _rank_files_with_embeddings(model, query_variant, candidates, expanded_query=variant_expanded)
             all_ranked_files.append(variant_ranked)
+            # Первый запрос (оригинальный) имеет больший вес
+            weight = 1.0 if idx == 0 else 0.8
+            query_weights.append(weight)
         
-        # Combine results: aggregate similarity scores across queries
+        # Combine results: improved aggregation with RRF and weighted similarity
         file_scores: Dict[str, float] = {}
         file_info_map: Dict[str, Dict[str, Any]] = {}
+        file_rrf_scores: Dict[str, float] = {}
+        file_similarity_scores: Dict[str, List[float]] = {}
         
-        for ranked_list in all_ranked_files:
-            for idx, file_info in enumerate(ranked_list):
+        for query_idx, ranked_list in enumerate(all_ranked_files):
+            query_weight = query_weights[query_idx]
+            
+            for rank_idx, file_info in enumerate(ranked_list):
                 file_path = _normalize_relative_path(file_info["path"])
                 similarity = file_info.get("similarity", 0.0)
-                # Use reciprocal rank fusion: score = 1 / (rank + k)
-                rank = idx + 1
-                rrf_score = 1.0 / (rank + 60)  # k=60 is standard RRF parameter
+                
+                # Reciprocal Rank Fusion: score = 1 / (rank + k)
+                # Используем k=20 для большей чувствительности к рангу
+                rank = rank_idx + 1
+                rrf_score = 1.0 / (rank + 20)  # k=20 для лучшей чувствительности
                 
                 if file_path not in file_scores:
                     file_scores[file_path] = 0.0
+                    file_rrf_scores[file_path] = 0.0
+                    file_similarity_scores[file_path] = []
                     file_info_map[file_path] = file_info.copy()
                 
-                # Combine: weighted average of similarity and RRF
-                file_scores[file_path] += (similarity * 0.7 + rrf_score * 0.3)
+                # Накопление RRF scores (взвешенное)
+                file_rrf_scores[file_path] += rrf_score * query_weight
+                
+                # Накопление similarity scores для усреднения
+                file_similarity_scores[file_path].append(similarity * query_weight)
+        
+        # Комбинируем RRF и similarity scores
+        for file_path in file_scores:
+            # Среднее similarity по всем запросам (взвешенное)
+            avg_similarity = sum(file_similarity_scores[file_path]) / len(file_similarity_scores[file_path]) if file_similarity_scores[file_path] else 0.0
+            
+            # Максимальное similarity (лучший результат среди всех запросов)
+            max_similarity = max(file_similarity_scores[file_path]) if file_similarity_scores[file_path] else 0.0
+            
+            # Нормализуем RRF score (максимальный RRF = 1.0 для top-1 файла)
+            max_rrf = max(file_rrf_scores.values()) if file_rrf_scores else 1.0
+            normalized_rrf = file_rrf_scores[file_path] / max_rrf if max_rrf > 0 else 0.0
+            
+            # Комбинируем: 60% max_similarity (лучший match), 30% avg_similarity (стабильность), 10% RRF (позиция)
+            combined_score = (max_similarity * 0.6 + avg_similarity * 0.3 + normalized_rrf * 0.1)
+            file_scores[file_path] = combined_score
         
         # Sort by combined score
         ranked_files = []
         for file_path, combined_score in sorted(file_scores.items(), key=lambda x: x[1], reverse=True):
             file_info = file_info_map[file_path]
             file_info["similarity"] = combined_score
+            file_info["multi_query_score"] = combined_score
             ranked_files.append(file_info)
         
         logger.debug(f"✅ Multi-query retrieval: combined {len(ranked_files)} files from {len(multi_queries)} queries")
@@ -1287,39 +1334,50 @@ def retrieve_relevant_embedding(
         # Get BM25 rankings
         bm25_ranked = _rank_files_with_bm25(task_prompt, candidates.copy())
         
-        # Normalize scores to [0, 1] range for both methods
-        if ranked_files:
-            max_semantic = max(f.get("similarity", 0.0) for f in ranked_files)
-            if max_semantic > 0:
-                for f in ranked_files:
-                    f["normalized_semantic"] = f.get("similarity", 0.0) / max_semantic
-            else:
-                for f in ranked_files:
-                    f["normalized_semantic"] = 0.0
-        else:
-            # If no ranked files, create empty normalized scores
-            pass
+        # Improved normalization: use min-max normalization with smoothing
+        semantic_scores = [f.get("similarity", 0.0) for f in ranked_files] if ranked_files else []
+        bm25_scores = [f.get("bm25_score", 0.0) for f in bm25_ranked] if bm25_ranked else []
         
-        if bm25_ranked:
-            max_bm25 = max(f.get("bm25_score", 0.0) for f in bm25_ranked)
-            if max_bm25 > 0:
-                for f in bm25_ranked:
-                    f["normalized_bm25"] = f.get("bm25_score", 0.0) / max_bm25
-            else:
-                for f in bm25_ranked:
-                    f["normalized_bm25"] = 0.0
+        # Normalize semantic scores
+        if semantic_scores:
+            min_semantic = min(semantic_scores)
+            max_semantic = max(semantic_scores)
+            range_semantic = max_semantic - min_semantic if max_semantic > min_semantic else 1.0
+            
+            for f in ranked_files:
+                raw_score = f.get("similarity", 0.0)
+                # Min-max normalization with smoothing (add small epsilon to avoid division by zero)
+                normalized = (raw_score - min_semantic) / range_semantic if range_semantic > 0 else 0.0
+                # Apply softmax-like transformation for better distribution
+                f["normalized_semantic"] = normalized ** 0.8  # Power scaling for better distribution
         else:
-            # If no BM25 results, create empty normalized scores
-            pass
+            for f in ranked_files:
+                f["normalized_semantic"] = 0.0
+        
+        # Normalize BM25 scores
+        if bm25_scores:
+            min_bm25 = min(bm25_scores)
+            max_bm25 = max(bm25_scores)
+            range_bm25 = max_bm25 - min_bm25 if max_bm25 > min_bm25 else 1.0
+            
+            for f in bm25_ranked:
+                raw_score = f.get("bm25_score", 0.0)
+                normalized = (raw_score - min_bm25) / range_bm25 if range_bm25 > 0 else 0.0
+                # Apply softmax-like transformation
+                f["normalized_bm25"] = normalized ** 0.8
+        else:
+            for f in bm25_ranked:
+                f["normalized_bm25"] = 0.0
         
         # Create file map for hybrid scoring
         hybrid_scores: Dict[str, float] = {}
         hybrid_info: Dict[str, Dict[str, Any]] = {}
         
-        # Add semantic scores
+        # Add semantic scores with weights
         for file_info in ranked_files:
             file_path = _normalize_relative_path(file_info["path"])
-            hybrid_scores[file_path] = file_info.get("normalized_semantic", 0.0) * hybrid_alpha
+            semantic_score = file_info.get("normalized_semantic", 0.0)
+            hybrid_scores[file_path] = semantic_score * hybrid_alpha
             hybrid_info[file_path] = file_info.copy()
         
         # Add BM25 scores (combine with semantic)
@@ -1328,7 +1386,8 @@ def retrieve_relevant_embedding(
             bm25_score = file_info.get("normalized_bm25", 0.0) * (1.0 - hybrid_alpha)
             
             if file_path in hybrid_scores:
-                hybrid_scores[file_path] += bm25_score
+                # Boost files that appear in both rankings
+                hybrid_scores[file_path] = hybrid_scores[file_path] * 1.2 + bm25_score
             else:
                 hybrid_scores[file_path] = bm25_score
                 hybrid_info[file_path] = file_info.copy()
