@@ -2337,10 +2337,10 @@ class LoCoBenchEvaluator:
                 # Architectural tasks benefit from seeing complete files rather than chunks
                 # to understand relationships and patterns
                 if task_category == 'architectural_understanding':
-                    effective_top_percent = min(0.40, retrieval_config.top_percent * 2)  # Double file coverage
+                    effective_top_percent = min(0.50, retrieval_config.top_percent * 2.27)  # Increased from 0.40 to 0.50 (2.27x multiplier)
                     effective_chunks_per_file = 0  # Use full files instead of chunks for architectural understanding
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = min(150000, retrieval_config.max_context_tokens * 1.5)  # More context
+                    effective_max_context = min(180000, retrieval_config.max_context_tokens * 1.8)  # Increased from 150000 to 180000
                     use_smart_chunking = False  # Disable chunking for architectural tasks - use full files
                     logger.info(
                         "🏗️ Architectural understanding task: using full files strategy "
@@ -2351,7 +2351,11 @@ class LoCoBenchEvaluator:
                     )
                 else:
                     effective_top_percent = retrieval_config.top_percent
-                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 5)
+                    # For comprehension tasks, increase chunks_per_file
+                    if task_category == 'code_comprehension':
+                        effective_chunks_per_file = min(10, getattr(retrieval_config, 'chunks_per_file', 8) + 2)  # Increase by 2 for comprehension
+                    else:
+                        effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
                     effective_max_context = retrieval_config.max_context_tokens
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
