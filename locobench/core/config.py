@@ -167,6 +167,15 @@ class RetrievalConfig:
     
     # Size of each chunk in characters (when smart_chunking=True)
     retrieval_chunk_size: int = 2000
+    
+    # Multi-Query Retrieval: Generate multiple query variants and combine results
+    use_multi_query: bool = True
+    
+    # Hybrid Search: Combine semantic (embeddings) and keyword (BM25) search
+    use_hybrid_search: bool = True
+    
+    # Weight for semantic search vs BM25 in hybrid search (0.0 = BM25 only, 1.0 = semantic only)
+    hybrid_alpha: float = 0.7
 
 
 @dataclass
