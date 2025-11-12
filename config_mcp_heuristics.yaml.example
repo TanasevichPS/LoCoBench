@@ -1,0 +1,33 @@
+# Пример конфигурации для MCP с эвристиками (без LLM)
+
+# ... остальные настройки из config.yaml ...
+
+retrieval:
+  # Включить retrieval
+  enabled: true
+  
+  # Включить MCP-based retrieval с эвристиками
+  use_mcp: true
+  
+  # Использовать эвристики (без LLM)
+  # Можно не указывать или указать "heuristics"
+  mcp_provider: "heuristics"  # или оставьте пустым
+  
+  # Остальные параметры retrieval как обычно
+  top_percent: 0.05
+  method: "embedding"
+  model_name: "all-MiniLM-L6-v2"
+  max_context_tokens: 4096
+  
+  # Для hard/expert задач
+  difficulties: ["hard", "expert"]
+  
+  # Smart chunking
+  smart_chunking: true
+  chunks_per_file: 5
+  retrieval_chunk_size: 2000
+  
+  # Multi-query и hybrid search
+  use_multi_query: true
+  use_hybrid_search: true
+  hybrid_alpha: 0.7

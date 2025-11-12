@@ -207,6 +207,9 @@ def _rank_chunks_with_embeddings(
 def _normalize_relative_path(raw_path: str) -> str:
     """Normalise file paths to POSIX-style relative strings."""
     path = raw_path.replace("\\", "/")
+    # Нормализовать двойные слеши в одинарные
+    while "//" in path:
+        path = path.replace("//", "/")
     while path.startswith("./"):
         path = path[2:]
     return path.lstrip("/")
@@ -1295,6 +1298,12 @@ def retrieve_relevant_embedding(
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
     task_category: Optional[str] = None,  # Add task_category parameter
+    use_mcp: bool = False,  # Use MCP-based retrieval
+    mcp_provider: Optional[str] = None,  # MCP provider
+    mcp_model: Optional[str] = None,  # MCP model
+    mcp_base_url: Optional[str] = None,  # MCP base URL
+    mcp_api_key: Optional[str] = None,  # MCP API key
+    config: Optional[Any] = None,  # Config object
 ) -> str:
     """
     Retrieve the most relevant project files using embeddings and return them as context.
@@ -1303,9 +1312,62 @@ def retrieve_relevant_embedding(
         smart_chunking: If True, split files into chunks and select most relevant chunks
         chunks_per_file: Maximum number of chunks to select per file (when smart_chunking=True)
         chunk_size: Size of each chunk in characters (when smart_chunking=True)
+        use_mcp: If True, use MCP-based intelligent retrieval instead of standard retrieval
+        mcp_provider: LLM provider for MCP ("openai", "anthropic", "ollama", "huggingface", "local_openai")
+        mcp_model: Model name for MCP
+        mcp_base_url: Base URL for local providers
+        mcp_api_key: API key for local providers
+        config: Config object for MCP
     """
     start_time = time.perf_counter()
-
+    
+    # Try MCP-based retrieval if enabled
+    if use_mcp and task_category and project_dir:
+        try:
+            from .mcp_retrieval import retrieve_with_mcp
+            
+            # Определить, использовать ли LLM или эвристики
+            # Если провайдер не указан или недоступен, используем эвристики
+            use_llm_for_mcp = False
+            if mcp_provider and mcp_provider not in ("", "none", "heuristics"):
+                # Попробуем использовать LLM только если провайдер указан
+                use_llm_for_mcp = True
+            
+            logger.info(
+                f"🔧 Using MCP-based retrieval "
+                f"(provider={mcp_provider or 'heuristics'}, "
+                f"use_llm={use_llm_for_mcp}, "
+                f"max_context_tokens={max_context_tokens}, "
+                f"top_percent={top_percent})"
+            )
+            
+            mcp_result = retrieve_with_mcp(
+                context_files=context_files or {},
+                task_prompt=task_prompt,
+                task_category=task_category,
+                project_dir=project_dir,
+                config=config,
+                provider=mcp_provider or "ollama",  # Имя не важно при use_llm=False
+                model=mcp_model,
+                base_url=mcp_base_url,
+                api_key=mcp_api_key,
+                use_llm=use_llm_for_mcp,  # Использовать LLM только если провайдер доступен
+                max_context_tokens=max_context_tokens,  # Из конфига: retrieval.max_context_tokens
+                top_percent=top_percent,  # Из конфига: retrieval.top_percent (может быть скорректировано по категории задачи)
+            )
+            
+            if mcp_result:
+                logger.info(f"✅ MCP retrieval returned {len(mcp_result)} characters")
+                return mcp_result
+            else:
+                logger.warning("⚠️ MCP retrieval returned empty result, falling back to standard retrieval")
+        except Exception as e:
+            logger.warning(f"⚠️ MCP retrieval failed: {e}. Falling back to standard retrieval.")
+            import traceback
+            logger.debug(traceback.format_exc())
+            # Fall through to standard retrieval
+    
+    # Standard retrieval (existing code)
     candidates = _prepare_candidate_files(context_files, project_dir)
     if not candidates:
         logger.warning("Retrieval: no candidate files found (project_dir=%s)", project_dir)
@@ -2252,6 +2314,12 @@ def retrieve_relevant(
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
     task_category: Optional[str] = None,  # Add task_category parameter
+    use_mcp: bool = False,  # Use MCP-based retrieval
+    mcp_provider: Optional[str] = None,  # MCP provider
+    mcp_model: Optional[str] = None,  # MCP model
+    mcp_base_url: Optional[str] = None,  # MCP base URL
+    mcp_api_key: Optional[str] = None,  # MCP API key
+    config: Optional[Any] = None,  # Config object
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -2271,6 +2339,12 @@ def retrieve_relevant(
             use_hybrid_search=use_hybrid_search,
             hybrid_alpha=hybrid_alpha,
             task_category=task_category,  # Pass task_category
+            use_mcp=use_mcp,  # Pass MCP parameters
+            mcp_provider=mcp_provider,
+            mcp_model=mcp_model,
+            mcp_base_url=mcp_base_url,
+            mcp_api_key=mcp_api_key,
+            config=config,
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")
@@ -2339,8 +2413,18 @@ def load_context_files_from_scenario(
         return {}
 
     loaded_files: Dict[str, str] = {}
+    
+    # Определить базовое имя проекта из project_dir для удаления префикса из путей
+    project_base_name = project_dir.name if project_dir else None
+    
     for raw_path in context_obj:
         normalized_path = _normalize_relative_path(str(raw_path))
+        
+        # Если путь начинается с имени проекта, убрать этот префикс
+        # Например: "EduGate_ScholarLink/src/file.c" -> "src/file.c" если project_dir уже указывает на EduGate_ScholarLink
+        if project_base_name and normalized_path.startswith(project_base_name + "/"):
+            normalized_path = normalized_path[len(project_base_name) + 1:]
+        
         candidate = project_dir / normalized_path
 
         if candidate.exists():
@@ -2350,7 +2434,17 @@ def load_context_files_from_scenario(
             except Exception as exc:  # pragma: no cover
                 logger.warning("Failed to read %s: %s", candidate, exc)
 
-        logger.debug("Context file %s not found relative to %s", raw_path, project_dir)
+        # Попробовать также с полным путем (если префикс не был удален)
+        if normalized_path != _normalize_relative_path(str(raw_path)):
+            candidate_full = project_dir / _normalize_relative_path(str(raw_path))
+            if candidate_full.exists():
+                try:
+                    loaded_files[_normalize_relative_path(str(raw_path))] = candidate_full.read_text(encoding="utf-8", errors="ignore")
+                    continue
+                except Exception as exc:
+                    logger.debug("Failed to read %s: %s", candidate_full, exc)
+
+        logger.debug("Context file %s not found relative to %s (tried: %s)", raw_path, project_dir, candidate)
 
     if not loaded_files:
         logger.warning(
