@@ -2273,9 +2273,8 @@ class LoCoBenchEvaluator:
         else:
             logger.debug("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
 
-        # Determine if we should load all project files (for hard/expert scenarios)
+        # Get difficulty for logging
         difficulty = scenario.get('difficulty', '').lower()
-        should_load_all_files = difficulty in ['hard', 'expert']
         
         retrieved_context = ""
         if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
@@ -2289,45 +2288,27 @@ class LoCoBenchEvaluator:
 
                 context_obj = scenario.get('context_files')
                 if isinstance(context_obj, dict):
-                    # Context files already provided as dict with content
+                    # Context files already provided as dict with content - use only these files
                     context_files_content = {
                         path: content for path, content in context_obj.items() if isinstance(content, str)
                     }
-                    # For hard/expert: if we have project_dir, also load all project files for retrieval
-                    if should_load_all_files and project_dir and project_dir.exists():
-                        logger.info("📚 Loading additional project files for hard/expert scenario")
-                        all_project_files = load_context_files_from_scenario(
-                            scenario,
-                            project_dir=project_dir,
-                            include_all_project_files=True,
-                        )
-                        # Merge with existing context files (project files take precedence if path matches)
-                        context_files_content.update(all_project_files)
+                    logger.info("📋 Using %d files from scenario['context_files'] for retrieval", len(context_files_content))
                 elif isinstance(context_obj, list) and project_dir:
+                    # Context files are provided as list of paths - load only these files
                     context_files_content = load_context_files_from_scenario(
                         scenario,
                         project_dir=project_dir,
-                        include_all_project_files=should_load_all_files,
+                        include_all_project_files=False,  # Use only files from scenario['context_files']
                     )
-                    # If no files were loaded, try loading all project files as fallback
-                    if not context_files_content and project_dir.exists():
-                        logger.warning(
-                            "⚠️ No files found from context_files list, falling back to loading all project files for retrieval"
-                        )
-                        context_files_content = load_context_files_from_scenario(
-                            scenario,
-                            project_dir=project_dir,
-                            include_all_project_files=True,
-                        )
-                elif (context_obj is None or (isinstance(context_obj, list) and not project_dir)) and project_dir and project_dir.exists():
-                    # No context_files or no project_dir - try to load all project files
-                    logger.info("📚 No context_files specified, loading all project files for retrieval")
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
+                    logger.info("📋 Loaded %d files from scenario['context_files'] list for retrieval", len(context_files_content))
                 else:
+                    # No context_files available - cannot perform retrieval
+                    logger.warning(
+                        "⚠️ No context_files available for retrieval in scenario %s (context_obj type: %s, project_dir: %s)",
+                        scenario.get('id', 'unknown'),
+                        type(context_obj).__name__ if context_obj else 'None',
+                        project_dir,
+                    )
                     context_files_content = {}
 
                 # Adjust retrieval parameters based on task category
@@ -2436,9 +2417,10 @@ class LoCoBenchEvaluator:
                 retrieved_context = ""
 
         # Build context section
-        # If retrieval is disabled or not applicable, load full context files
+        # If retrieval is disabled or not applicable, load context files from scenario
         if not retrieved_context:
             # Load context files content when retrieval is not used
+            # Use only files from scenario['context_files'] - no loading of all project files
             context_obj = scenario.get('context_files')
             context_files_content = {}
             
@@ -2451,53 +2433,32 @@ class LoCoBenchEvaluator:
             )
             
             if isinstance(context_obj, dict):
-                # Context files are already provided as dict with content
+                # Context files already provided as dict with content - use only these files
                 context_files_content = {
                     path: content for path, content in context_obj.items() if isinstance(content, str)
                 }
                 logger.debug("📋 Loaded %d files from dict context_files", len(context_files_content))
-                # For hard/expert: if we have project_dir, also load all project files
-                if should_load_all_files and project_dir and project_dir.exists():
-                    logger.info("📚 Loading additional project files for hard/expert scenario (non-retrieval mode)")
-                    all_project_files = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
-                    # Merge with existing context files (project files take precedence if path matches)
-                    context_files_content.update(all_project_files)
-                    logger.debug("📚 Added %d additional project files", len(all_project_files))
             elif isinstance(context_obj, list) and project_dir:
-                # Context files are provided as list of paths - load them
+                # Context files are provided as list of paths - load only these files
                 logger.debug("📋 Attempting to load %d files from list", len(context_obj))
                 context_files_content = load_context_files_from_scenario(
                     scenario,
                     project_dir=project_dir,
-                    include_all_project_files=should_load_all_files,
+                    include_all_project_files=False,  # Use only files from scenario['context_files']
                 )
-                # If no files were loaded and we have project_dir, try loading all project files as fallback
-                if not context_files_content and project_dir.exists() and not should_load_all_files:
+                if not context_files_content:
                     logger.warning(
-                        "⚠️ No files found from context_files list, falling back to loading all project files for scenario %s",
+                        "⚠️ No files found from context_files list for scenario %s",
                         scenario.get('id', 'unknown'),
                     )
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
-            elif context_obj is None or (isinstance(context_obj, list) and not project_dir):
-                # No context_files or no project_dir - try to load all project files if project_dir exists
-                if project_dir and project_dir.exists():
-                    logger.info(
-                        "📚 No context_files specified, loading all project files for scenario %s",
-                        scenario.get('id', 'unknown'),
-                    )
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
+            else:
+                # No context_files available
+                logger.warning(
+                    "⚠️ No context_files available for scenario %s (context_obj type: %s, project_dir: %s)",
+                    scenario.get('id', 'unknown'),
+                    type(context_obj).__name__ if context_obj else 'None',
+                    project_dir,
+                )
             
             # Format context files content
             if context_files_content:
