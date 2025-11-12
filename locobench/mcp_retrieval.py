@@ -87,20 +87,20 @@ class LoCoBenchMCPServer:
     def _initialize_tools(self) -> List[MCPTool]:
         """Initialize tools based on task category"""
         category_tools_map = {
-            'security_analysis': self._get_security_tools(),
-            'architectural_understanding': self._get_architectural_tools(),
-            'code_comprehension': self._get_comprehension_tools(),
-            'feature_implementation': self._get_implementation_tools(),
-            'bug_investigation': self._get_bug_investigation_tools(),
-            'cross_file_refactoring': self._get_refactoring_tools(),
-            'integration_testing': self._get_integration_testing_tools(),
-            'multi_session_development': self._get_multi_session_tools(),
+            'security_analysis': self._get_security_tools,
+            'architectural_understanding': self._get_architectural_tools,
+            'code_comprehension': self._get_comprehension_tools,
+            'feature_implementation': self._get_implementation_tools,
+            'bug_investigation': self._get_bug_investigation_tools,
+            'cross_file_refactoring': self._get_refactoring_tools,
+            'integration_testing': self._get_integration_testing_tools,
+            'multi_session_development': self._get_multi_session_tools,
         }
         
         category_lower = self.task_category.lower()
         for key, tools_func in category_tools_map.items():
             if key in category_lower:
-                return tools_func()
+                return tools_func()  # Call the function to get tools
         
         # Default tools
         return self._get_default_tools()
@@ -949,6 +949,8 @@ def retrieve_with_mcp(
                 provider=provider,
                 model=model,
                 use_llm=use_llm,
+                base_url=base_url,
+                api_key=api_key,
             )
 
 
