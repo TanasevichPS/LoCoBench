@@ -1049,11 +1049,11 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['bug', 'error', 'exception', 'fail', 'issue', 'problem', 'debug', 'trace'],
         },
         'architectural_understanding': {
-            'file_multiplier': 1.75,  # Увеличено с 1.60 - больше файлов, но с акцентом на качество через семантику
-            'level1_ratio': 0.58,     # Увеличено с 0.50 - ЕЩЕ БОЛЬШЕ семантики для точного поиска (текущий результат: 1.754)
-            'level2_ratio': 0.32,     # Уменьшено с 0.40 - меньше зависимостей, которые могут добавлять шум
+            'file_multiplier': 1.85,  # Увеличено с 1.75 - больше файлов для архитектурных задач (текущий результат: 1.789)
+            'level1_ratio': 0.65,     # Увеличено с 0.58 - МАКСИМАЛЬНО семантики для точного поиска архитектурных концепций
+            'level2_ratio': 0.25,     # Уменьшено с 0.32 - минимум зависимостей, которые могут добавлять шум
             'level3_ratio': 0.10,     # Важные файлы
-            'hybrid_alpha': 0.72,     # Увеличено с 0.65 - больше семантики в hybrid search для лучшего качества
+            'hybrid_alpha': 0.78,     # Увеличено с 0.72 - еще больше семантики в hybrid search (близко к Security Analysis)
             'dependency_depth': 3,     # Оставить умеренную глубину
             'dependency_files_per_level': 25,  # Оставить умеренное количество
             'chunks_per_file': 5,     # Стандартное значение
@@ -1061,11 +1061,11 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract', 'factory', 'builder', 'service', 'manager', 'config', 'main', 'entry'],
         },
         'code_comprehension': {
-            'file_multiplier': 1.40,  # Увеличено с 1.25 - больше файлов, но с акцентом на качество через семантику
-            'level1_ratio': 0.68,     # Увеличено с 0.60 - ЕЩЕ БОЛЬШЕ семантики для точного поиска (текущий результат: 1.943)
-            'level2_ratio': 0.27,     # Уменьшено с 0.35 - меньше зависимостей, которые могут добавлять шум
+            'file_multiplier': 1.50,  # Увеличено с 1.40 - больше файлов для comprehension (текущий результат: 2.199, хорошо, но можно лучше)
+            'level1_ratio': 0.72,     # Увеличено с 0.68 - еще больше семантики для точного поиска (работает хорошо, продолжаем)
+            'level2_ratio': 0.23,     # Уменьшено с 0.27 - еще меньше зависимостей
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.75,     # Увеличено с 0.68 - больше семантики в hybrid search для лучшего качества
+            'hybrid_alpha': 0.80,     # Увеличено с 0.75 - максимум семантики в hybrid search (как Security Analysis)
             'dependency_depth': 3,     # Оставить умеренную глубину
             'dependency_files_per_level': 20,  # Оставить умеренное количество
             'chunks_per_file': 5,     # Стандартное значение
