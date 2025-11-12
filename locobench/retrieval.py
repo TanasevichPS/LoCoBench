@@ -1049,26 +1049,26 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['bug', 'error', 'exception', 'fail', 'issue', 'problem', 'debug', 'trace'],
         },
         'architectural_understanding': {
-            'file_multiplier': 2.40,  # Увеличено с 2.15 - критично для архитектурных задач (текущий результат: 1.789)
-            'level1_ratio': 0.38,     # Немного уменьшено для большего количества зависимостей
-            'level2_ratio': 0.52,     # Увеличено с 0.50 - больше зависимостей для структуры
+            'file_multiplier': 1.60,  # ВЕРНУТО из f1922da (было 2.40) - оптимальное значение для максимального скора 2.115
+            'level1_ratio': 0.50,     # ВЕРНУТО из f1922da (было 0.38) - больше семантики для точного поиска
+            'level2_ratio': 0.40,     # ВЕРНУТО из f1922da (было 0.52) - сбалансированные зависимости
             'level3_ratio': 0.10,     # Важные файлы
-            'hybrid_alpha': 0.65,     # Увеличено с 0.58 - больше семантики для архитектурных концепций
-            'dependency_depth': 4,     # Глубокая зависимость
-            'dependency_files_per_level': 45,  # Увеличено с 40 - больше файлов на уровень
-            'chunks_per_file': 9,     # Увеличено с 8 - больше чанков для полного понимания
+            'hybrid_alpha': 0.65,     # Оставить текущее значение
+            'dependency_depth': 3,     # ВЕРНУТО из f1922da (было 4) - умеренная глубина
+            'dependency_files_per_level': 25,  # ВЕРНУТО из f1922da (было 45) - умеренное количество
+            'chunks_per_file': 5,     # ВЕРНУТО из f1922da (было 9) - стандартное значение
             'prioritize_test_files': False,
             'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract', 'factory', 'builder', 'service', 'manager', 'config', 'main', 'entry'],
         },
         'code_comprehension': {
-            'file_multiplier': 2.10,  # Увеличено с 1.80 - критично для comprehension (текущий результат: 1.938)
-            'level1_ratio': 0.48,     # Немного уменьшено для большего количества зависимостей
-            'level2_ratio': 0.47,     # Увеличено с 0.45 - больше зависимостей для трассировки потока
+            'file_multiplier': 1.25,  # ВЕРНУТО из f1922da (было 2.10) - оптимальное значение для максимального скора 2.115
+            'level1_ratio': 0.60,     # ВЕРНУТО из f1922da (было 0.48) - больше семантики для точного поиска
+            'level2_ratio': 0.35,     # ВЕРНУТО из f1922da (было 0.47) - сбалансированные зависимости
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.68,     # Увеличено с 0.64 - больше семантики для понимания кода
-            'dependency_depth': 4,     # Увеличено с 3 - более глубокая трассировка
-            'dependency_files_per_level': 40,  # Увеличено с 35 - больше файлов для трассировки
-            'chunks_per_file': 8,     # Увеличено с 7 - больше чанков для полного понимания потока
+            'hybrid_alpha': 0.68,     # Оставить текущее значение
+            'dependency_depth': 3,     # ВЕРНУТО из f1922da (было 4) - умеренная глубина
+            'dependency_files_per_level': 20,  # ВЕРНУТО из f1922da (было 40) - умеренное количество
+            'chunks_per_file': 5,     # ВЕРНУТО из f1922da (было 8) - стандартное значение
             'prioritize_test_files': False,
             'boost_keywords': ['comprehension', 'understand', 'trace', 'follow', 'flow', 'execution', 'call', 'method', 'function', 'handler', 'processor', 'service', 'controller'],
         },
@@ -1401,17 +1401,8 @@ def retrieve_relevant_embedding(
     selected_count = int(selected_count * file_multiplier)
     selected_count = min(selected_count, len(candidates))
     
-    # Additional boost for problematic categories based on current results
-    # Architectural Understanding: 1.789 (очень низко) - нужен дополнительный буст
-    # Code Comprehension: 1.938 (низко) - нужен дополнительный буст
-    if is_architectural_task:
-        selected_count = int(selected_count * 1.10)  # +10% дополнительных файлов для архитектуры
-        selected_count = min(selected_count, len(candidates))
-        logger.debug("🏗️ Architectural task: additional 10% boost applied")
-    elif is_code_comprehension_task:
-        selected_count = int(selected_count * 1.08)  # +8% дополнительных файлов для comprehension
-        selected_count = min(selected_count, len(candidates))
-        logger.debug("🔍 Code comprehension task: additional 8% boost applied")
+    # УДАЛЕНО: Дополнительные бусты ухудшили результаты (упали с 2.115 до 1.991)
+    # Версия f1922da без дополнительных бустов давала максимальный скор 2.115
     
     logger.debug("📊 Category-specific config (%s): increased file count from %d to %d (%.2fx)", 
                 task_category or 'default', original_selected_count, selected_count, file_multiplier)
