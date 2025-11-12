@@ -1317,18 +1317,30 @@ def retrieve_relevant_embedding(
         try:
             from .mcp_retrieval import retrieve_with_mcp
             
-            logger.info(f"🔧 Using MCP-based retrieval (provider={mcp_provider}, model={mcp_model})")
+            # Определить, использовать ли LLM или эвристики
+            # Если провайдер не указан или недоступен, используем эвристики
+            use_llm_for_mcp = False
+            if mcp_provider and mcp_provider not in ("", "none", "heuristics"):
+                # Попробуем использовать LLM только если провайдер указан
+                use_llm_for_mcp = True
+            
+            logger.info(
+                f"🔧 Using MCP-based retrieval "
+                f"(provider={mcp_provider or 'heuristics'}, "
+                f"use_llm={use_llm_for_mcp})"
+            )
+            
             mcp_result = retrieve_with_mcp(
                 context_files=context_files or {},
                 task_prompt=task_prompt,
                 task_category=task_category,
                 project_dir=project_dir,
                 config=config,
-                provider=mcp_provider or "ollama",
+                provider=mcp_provider or "ollama",  # Имя не важно при use_llm=False
                 model=mcp_model,
                 base_url=mcp_base_url,
                 api_key=mcp_api_key,
-                use_llm=True,
+                use_llm=use_llm_for_mcp,  # Использовать LLM только если провайдер доступен
             )
             
             if mcp_result:

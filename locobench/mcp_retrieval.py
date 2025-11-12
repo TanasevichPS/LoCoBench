@@ -1036,29 +1036,44 @@ async def retrieve_with_mcp_async(
             # Fall through to heuristic-based selection
     
     # Fallback: Simple heuristic-based selection
-    if server.tools:
-        # Execute all tools with basic parameters
-        all_results = []
-        for tool in server.tools:
-            try:
-                # Extract keywords from task prompt
-                keywords = " ".join(set(task_prompt.lower().split()[:10]))
-                results = tool.execute(keywords=keywords)
-                all_results.extend(results)
-            except Exception as e:
-                logger.debug(f"Tool {tool.name} failed: {e}")
+    # Используем улучшенную версию с эвристиками
+    try:
+        from .mcp_heuristics import retrieve_with_mcp_heuristics
         
-        # Deduplicate by path
-        seen_paths = set()
-        unique_results = []
-        for result in all_results:
-            path = result.get("path", "")
-            if path and path not in seen_paths:
-                seen_paths.add(path)
-                unique_results.append(result)
-                server.selected_files.add(path)
+        logger.info("🔧 Using MCP heuristics-based retrieval (no LLM)")
+        return retrieve_with_mcp_heuristics(
+            context_files=context_files,
+            task_prompt=task_prompt,
+            task_category=task_category,
+            project_dir=project_dir,
+        )
+    except ImportError:
+        # Если модуль недоступен, используем базовую версию
+        logger.debug("MCP heuristics module not available, using basic fallback")
         
-        # Format results
-        return server.format_selected_context()
+        if server.tools:
+            # Execute all tools with basic parameters
+            all_results = []
+            for tool in server.tools:
+                try:
+                    # Extract keywords from task prompt
+                    keywords = " ".join(set(task_prompt.lower().split()[:10]))
+                    results = tool.execute(keywords=keywords)
+                    all_results.extend(results)
+                except Exception as e:
+                    logger.debug(f"Tool {tool.name} failed: {e}")
+            
+            # Deduplicate by path
+            seen_paths = set()
+            unique_results = []
+            for result in all_results:
+                path = result.get("path", "")
+                if path and path not in seen_paths:
+                    seen_paths.add(path)
+                    unique_results.append(result)
+                    server.selected_files.add(path)
+            
+            # Format results
+            return server.format_selected_context()
     
     return ""
