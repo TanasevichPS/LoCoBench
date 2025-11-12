@@ -1336,7 +1336,9 @@ def retrieve_relevant_embedding(
             logger.info(
                 f"🔧 Using MCP-based retrieval "
                 f"(provider={mcp_provider or 'heuristics'}, "
-                f"use_llm={use_llm_for_mcp})"
+                f"use_llm={use_llm_for_mcp}, "
+                f"max_context_tokens={max_context_tokens}, "
+                f"top_percent={top_percent})"
             )
             
             mcp_result = retrieve_with_mcp(
@@ -1350,8 +1352,8 @@ def retrieve_relevant_embedding(
                 base_url=mcp_base_url,
                 api_key=mcp_api_key,
                 use_llm=use_llm_for_mcp,  # Использовать LLM только если провайдер доступен
-                max_context_tokens=max_context_tokens,  # Передать ограничение размера
-                top_percent=top_percent,  # Передать процент файлов
+                max_context_tokens=max_context_tokens,  # Из конфига: retrieval.max_context_tokens
+                top_percent=top_percent,  # Из конфига: retrieval.top_percent (может быть скорректировано по категории задачи)
             )
             
             if mcp_result:
