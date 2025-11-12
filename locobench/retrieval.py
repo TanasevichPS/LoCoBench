@@ -1001,28 +1001,28 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['session', 'state', 'persist', 'cache', 'store', 'memory'],
         },
         'security_analysis': {
-            'file_multiplier': 1.45,  # Увеличено с 1.35
-            'level1_ratio': 0.78,     # Больше семантики для поиска уязвимостей
-            'level2_ratio': 0.17,     # Зависимости
+            'file_multiplier': 1.50,  # Увеличено с 1.45 - для улучшения с 2.350 до 2.4+
+            'level1_ratio': 0.80,     # Увеличено с 0.78 - больше семантики для поиска уязвимостей
+            'level2_ratio': 0.15,     # Немного уменьшено
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.82,     # Больше семантики для концептуального поиска
+            'hybrid_alpha': 0.84,     # Увеличено с 0.82 - еще больше семантики для концептуального поиска
             'dependency_depth': 2,
-            'dependency_files_per_level': 18,
-            'chunks_per_file': 5,
+            'dependency_files_per_level': 20,  # Увеличено с 18
+            'chunks_per_file': 6,     # Увеличено с 5 - больше чанков для анализа безопасности
             'prioritize_test_files': False,
-            'boost_keywords': ['security', 'auth', 'encrypt', 'validate', 'sanitize', 'vulnerability', 'exploit', 'attack'],
+            'boost_keywords': ['security', 'auth', 'encrypt', 'validate', 'sanitize', 'vulnerability', 'exploit', 'attack', 'password', 'token', 'permission', 'access'],
         },
         'feature_implementation': {
-            'file_multiplier': 1.40,  # Увеличено с 1.30
-            'level1_ratio': 0.72,     # Семантически релевантные файлы для реализации
-            'level2_ratio': 0.23,     # Зависимости для контекста
+            'file_multiplier': 1.55,  # Увеличено с 1.40 - для улучшения с 2.174 до 2.3+
+            'level1_ratio': 0.70,     # Немного уменьшено для большего количества зависимостей
+            'level2_ratio': 0.25,     # Увеличено с 0.23 - больше зависимостей для контекста
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.76,     # Баланс семантики и ключевых слов
-            'dependency_depth': 2,
-            'dependency_files_per_level': 22,
-            'chunks_per_file': 5,
+            'hybrid_alpha': 0.78,     # Увеличено с 0.76 - больше семантики для поиска релевантного кода
+            'dependency_depth': 3,     # Увеличено с 2 - более глубокая зависимость
+            'dependency_files_per_level': 28,  # Увеличено с 22 - больше файлов для контекста
+            'chunks_per_file': 6,     # Увеличено с 5 - больше чанков для реализации
             'prioritize_test_files': False,
-            'boost_keywords': ['feature', 'implement', 'add', 'create', 'new', 'functionality'],
+            'boost_keywords': ['feature', 'implement', 'add', 'create', 'new', 'functionality', 'api', 'endpoint', 'service', 'handler', 'controller'],
         },
         'cross_file_refactoring': {
             'file_multiplier': 2.10,  # Увеличено с 2.00 - нужно больше файлов для рефакторинга
@@ -1049,28 +1049,28 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['bug', 'error', 'exception', 'fail', 'issue', 'problem', 'debug', 'trace'],
         },
         'architectural_understanding': {
-            'file_multiplier': 2.15,  # Увеличено с 2.00 - нужно больше файлов для архитектуры
-            'level1_ratio': 0.40,     # Семантически релевантные
-            'level2_ratio': 0.50,     # Много зависимостей для понимания структуры
+            'file_multiplier': 2.40,  # Увеличено с 2.15 - критично для архитектурных задач (текущий результат: 1.789)
+            'level1_ratio': 0.38,     # Немного уменьшено для большего количества зависимостей
+            'level2_ratio': 0.52,     # Увеличено с 0.50 - больше зависимостей для структуры
             'level3_ratio': 0.10,     # Важные файлы
-            'hybrid_alpha': 0.58,     # Больше BM25 для точных совпадений архитектурных паттернов
+            'hybrid_alpha': 0.65,     # Увеличено с 0.58 - больше семантики для архитектурных концепций
             'dependency_depth': 4,     # Глубокая зависимость
-            'dependency_files_per_level': 40,  # Больше файлов на уровень
-            'chunks_per_file': 8,     # Больше чанков для полного понимания архитектуры
+            'dependency_files_per_level': 45,  # Увеличено с 40 - больше файлов на уровень
+            'chunks_per_file': 9,     # Увеличено с 8 - больше чанков для полного понимания
             'prioritize_test_files': False,
-            'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract'],
+            'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract', 'factory', 'builder', 'service', 'manager', 'config', 'main', 'entry'],
         },
         'code_comprehension': {
-            'file_multiplier': 1.80,  # Увеличено с 1.60 - нужно больше файлов для понимания
-            'level1_ratio': 0.50,     # Семантически релевантные
-            'level2_ratio': 0.45,     # Много зависимостей для трассировки потока
+            'file_multiplier': 2.10,  # Увеличено с 1.80 - критично для comprehension (текущий результат: 1.938)
+            'level1_ratio': 0.48,     # Немного уменьшено для большего количества зависимостей
+            'level2_ratio': 0.47,     # Увеличено с 0.45 - больше зависимостей для трассировки потока
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.64,     # Баланс для понимания кода
-            'dependency_depth': 3,
-            'dependency_files_per_level': 35,
-            'chunks_per_file': 7,     # Больше чанков для полного понимания
+            'hybrid_alpha': 0.68,     # Увеличено с 0.64 - больше семантики для понимания кода
+            'dependency_depth': 4,     # Увеличено с 3 - более глубокая трассировка
+            'dependency_files_per_level': 40,  # Увеличено с 35 - больше файлов для трассировки
+            'chunks_per_file': 8,     # Увеличено с 7 - больше чанков для полного понимания потока
             'prioritize_test_files': False,
-            'boost_keywords': ['comprehension', 'understand', 'trace', 'follow', 'flow', 'execution', 'call'],
+            'boost_keywords': ['comprehension', 'understand', 'trace', 'follow', 'flow', 'execution', 'call', 'method', 'function', 'handler', 'processor', 'service', 'controller'],
         },
     }
     
@@ -1400,6 +1400,19 @@ def retrieve_relevant_embedding(
     file_multiplier = category_config['file_multiplier']
     selected_count = int(selected_count * file_multiplier)
     selected_count = min(selected_count, len(candidates))
+    
+    # Additional boost for problematic categories based on current results
+    # Architectural Understanding: 1.789 (очень низко) - нужен дополнительный буст
+    # Code Comprehension: 1.938 (низко) - нужен дополнительный буст
+    if is_architectural_task:
+        selected_count = int(selected_count * 1.10)  # +10% дополнительных файлов для архитектуры
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🏗️ Architectural task: additional 10% boost applied")
+    elif is_code_comprehension_task:
+        selected_count = int(selected_count * 1.08)  # +8% дополнительных файлов для comprehension
+        selected_count = min(selected_count, len(candidates))
+        logger.debug("🔍 Code comprehension task: additional 8% boost applied")
+    
     logger.debug("📊 Category-specific config (%s): increased file count from %d to %d (%.2fx)", 
                 task_category or 'default', original_selected_count, selected_count, file_multiplier)
     
@@ -1613,22 +1626,26 @@ def retrieve_relevant_embedding(
             original_sim = file_info.get("similarity", 0.0)
             boost = 0.0
             
-            # Boost for category-specific keywords
+            # Boost for category-specific keywords (увеличено для лучшего ранжирования)
             if boost_keywords:
                 keyword_matches = sum(1 for keyword in boost_keywords if keyword in file_path_lower or keyword in file_name_lower)
                 if keyword_matches > 0:
-                    boost += 0.25 + (keyword_matches * 0.05)  # Base boost + per keyword
+                    boost += 0.30 + (keyword_matches * 0.08)  # Увеличено: Base 0.30 + 0.08 per keyword (было 0.25 + 0.05)
             
             # Boost for test files if prioritized
             if prioritize_test_files:
                 if any(test_indicator in file_path_lower for test_indicator in ['test', 'spec', 'specification', 'mock', 'stub']):
-                    boost += 0.20
+                    boost += 0.25  # Увеличено с 0.20
             
-            # Boost for files mentioned in task prompt
+            # Boost for files mentioned in task prompt (увеличено)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.15
+                boost += 0.20  # Увеличено с 0.15
+            
+            # Additional boost for high similarity files (they're likely very relevant)
+            if original_sim > 0.15:  # Увеличено порог с 0.12
+                boost += 0.10  # Дополнительный бонус для высокорелевантных файлов
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
@@ -1661,13 +1678,13 @@ def retrieve_relevant_embedding(
             # Boost similarity for architectural files
             boost = 0.0
             
-            # 1. Boost for architectural keywords in path/name (FURTHER INCREASED)
+            # 1. Boost for architectural keywords in path/name (FURTHER INCREASED для улучшения с 1.789)
             keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
             if keyword_matches > 0:
-                boost += 0.35 + (keyword_matches * 0.06)  # Increased: Base 0.35 + 0.06 per keyword
+                boost += 0.40 + (keyword_matches * 0.08)  # Увеличено: Base 0.40 + 0.08 per keyword (было 0.35 + 0.06)
             
             # 2. Boost for architectural patterns in content (FURTHER INCREASED)
-            content_preview = file_info.get("content", "")[:3500]  # Extended to 3500 chars (was 3000)
+            content_preview = file_info.get("content", "")[:4000]  # Extended to 4000 chars (was 3500)
             content_lower = content_preview.lower()
             architectural_patterns = [
                 'interface ', 'abstract class', 'implements', 'extends', 'public class',
@@ -1676,21 +1693,21 @@ def retrieve_relevant_embedding(
             ]
             pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
             if pattern_matches > 0:
-                boost += 0.42 + (pattern_matches * 0.12)  # Increased: Base 0.42 + 0.12 per pattern
+                boost += 0.45 + (pattern_matches * 0.15)  # Увеличено: Base 0.45 + 0.15 per pattern (было 0.42 + 0.12)
             
             # 3. Boost for files with high similarity already (they're likely relevant)
-            if original_sim > 0.12:  # Lowered threshold from 0.14 to 0.12
-                boost += 0.25  # Increased from 0.20
+            if original_sim > 0.10:  # Снижено порог с 0.12 для большего охвата
+                boost += 0.28  # Увеличено с 0.25
             
             # 4. Boost for files mentioned in task prompt (by name)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.30  # Increased from 0.25
+                boost += 0.35  # Увеличено с 0.30
             
             # 5. Additional boost for entry points and configuration files
             if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
-                boost += 0.25  # Increased from 0.20
+                boost += 0.30  # Увеличено с 0.25
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
@@ -1747,9 +1764,9 @@ def retrieve_relevant_embedding(
     
     # For architectural tasks, apply quality filter - only select files with good similarity
     if is_architectural_task or is_refactoring_task:
-        # Filter to files with similarity > 0.07 (after boost) to ensure quality
-        # Lowered threshold significantly to capture more architectural files
-        quality_threshold = 0.05  # Lowered from 0.07 to 0.05
+        # Filter to files with similarity > threshold (after boost) to ensure quality
+        # Используем более низкий порог для архитектурных задач, чтобы захватить больше файлов
+        quality_threshold = 0.04  # Снижено с 0.05 для большего охвата архитектурных файлов
         quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
         if len(quality_files) >= level1_count:
             level1_files = quality_files[:level1_count]
@@ -1767,8 +1784,8 @@ def retrieve_relevant_embedding(
                 level1_count
             )
     elif is_code_comprehension_task or is_bug_investigation_task:
-        # For comprehension/bug investigation: slightly lower threshold
-        quality_threshold = 0.05  # Lowered from 0.06 to 0.05
+        # For comprehension/bug investigation: lower threshold для большего охвата
+        quality_threshold = 0.04  # Снижено с 0.05 для большего охвата файлов для трассировки
         quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
         if len(quality_files) >= level1_count:
             level1_files = quality_files[:level1_count]
@@ -1987,17 +2004,17 @@ def retrieve_relevant_embedding(
                         early_chunk = file_chunks_sorted_by_pos[i]
                         if early_chunk not in top_chunks and len(top_chunks) < effective_chunks_per_file:
                             # Stronger boost for early chunks in architectural/refactoring tasks
-                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.15  # Increased from 0.13
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.18  # Увеличено с 0.15
                             top_chunks.append(early_chunk)
                 
                 # For comprehension and bug investigation tasks, prioritize more chunks for tracing
                 elif (is_code_comprehension_task or is_bug_investigation_task) and len(file_chunks_sorted_by_pos) > 1:
                     # Include first chunks for better flow tracing
-                    max_early_chunks = min(5, effective_chunks_per_file - 1, len(file_chunks_sorted_by_pos) - 1)
+                    max_early_chunks = min(6, effective_chunks_per_file - 1, len(file_chunks_sorted_by_pos) - 1)  # Увеличено с 5 до 6
                     for i in range(1, max_early_chunks + 1):
                         early_chunk = file_chunks_sorted_by_pos[i]
                         if early_chunk not in top_chunks and len(top_chunks) < effective_chunks_per_file:
-                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.10
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.12  # Увеличено с 0.10
                             top_chunks.append(early_chunk)
                 
                 # Diversification strategy: select chunks from different parts of the file
