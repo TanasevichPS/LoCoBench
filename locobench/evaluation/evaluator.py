@@ -2319,7 +2319,7 @@ class LoCoBenchEvaluator:
                     effective_top_percent = min(0.70, retrieval_config.top_percent * 3.18)  # Increased from 0.60 to 0.70
                     effective_chunks_per_file = 0  # Use full files instead of chunks
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = min(220000, retrieval_config.max_context_tokens * 2.2)  # Increased from 200000 to 220000
+                    effective_max_context = int(min(220000, retrieval_config.max_context_tokens * 2.2))  # Increased from 200000 to 220000
                     use_smart_chunking = False  # Disable chunking for architectural tasks - use full files
                     logger.info(
                         "🏗️ Architectural/Refactoring task: using full files strategy "
@@ -2332,7 +2332,7 @@ class LoCoBenchEvaluator:
                     effective_top_percent = retrieval_config.top_percent * 1.40  # Increased from 1.30 to 1.40
                     effective_chunks_per_file = min(16, getattr(retrieval_config, 'chunks_per_file', 8) + 8)  # Increased from +6 to +8
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = min(140000, retrieval_config.max_context_tokens * 1.4)  # Increased from 130000 to 140000
+                    effective_max_context = int(min(140000, retrieval_config.max_context_tokens * 1.4))  # Increased from 130000 to 140000
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                     logger.info(
                         "🔍 Comprehension/Bug investigation task: using enhanced chunking "
@@ -2345,25 +2345,25 @@ class LoCoBenchEvaluator:
                     effective_top_percent = retrieval_config.top_percent * 1.35  # Increased from 1.25 to 1.35
                     effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = retrieval_config.max_context_tokens
+                    effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 elif task_category == 'multi_session_development':
                     effective_top_percent = retrieval_config.top_percent * 1.30  # Increased from 1.20 to 1.30
                     effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = retrieval_config.max_context_tokens
+                    effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 elif task_category == 'security_analysis':
                     effective_top_percent = retrieval_config.top_percent * 1.30  # Increased from 1.20 to 1.30
                     effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = retrieval_config.max_context_tokens
+                    effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 elif task_category == 'feature_implementation':
                     effective_top_percent = retrieval_config.top_percent * 1.25  # Increased from 1.15 to 1.25
                     effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = retrieval_config.max_context_tokens
+                    effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 else:
                     effective_top_percent = retrieval_config.top_percent
@@ -2373,7 +2373,7 @@ class LoCoBenchEvaluator:
                     else:
                         effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = retrieval_config.max_context_tokens
+                    effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 
                 retrieved_context = retrieve_relevant(

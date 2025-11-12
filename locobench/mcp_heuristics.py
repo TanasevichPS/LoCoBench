@@ -239,7 +239,7 @@ def retrieve_with_mcp_heuristics(
     # Применить ограничение на размер контекста
     # max_context_tokens уже интерпретируется как количество символов (см. _apply_length_budget в retrieval.py)
     if max_context_tokens:
-        max_chars = max_context_tokens  # Используем напрямую как символы
+        max_chars = int(max_context_tokens)  # Привести к int для использования в slice
         total_chars = 0
         filtered_results = []
         
