@@ -1295,6 +1295,12 @@ def retrieve_relevant_embedding(
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
     task_category: Optional[str] = None,  # Add task_category parameter
+    use_mcp: bool = False,  # Use MCP-based retrieval
+    mcp_provider: Optional[str] = None,  # MCP provider
+    mcp_model: Optional[str] = None,  # MCP model
+    mcp_base_url: Optional[str] = None,  # MCP base URL
+    mcp_api_key: Optional[str] = None,  # MCP API key
+    config: Optional[Any] = None,  # Config object
 ) -> str:
     """
     Retrieve the most relevant project files using embeddings and return them as context.
