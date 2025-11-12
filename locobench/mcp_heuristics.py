@@ -42,6 +42,26 @@ def retrieve_with_mcp_heuristics(
     """
     logger.info(f"🔧 Using MCP heuristics-based retrieval for category: {task_category}")
     
+    # Если context_files пустой, загрузить файлы из project_dir
+    if not context_files and project_dir and project_dir.exists():
+        logger.info(f"📁 Loading files from project directory: {project_dir}")
+        try:
+            from ..retrieval import _collect_project_code_files
+            
+            project_files = _collect_project_code_files(project_dir)
+            context_files = {
+                file_info["path"]: file_info["content"]
+                for file_info in project_files
+            }
+            logger.info(f"✅ Loaded {len(context_files)} files from project directory")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load files from project_dir: {e}")
+            context_files = {}
+    
+    if not context_files:
+        logger.warning("⚠️ No context files available for MCP retrieval")
+        return ""
+    
     # Создать MCP сервер
     server = LoCoBenchMCPServer(
         project_dir=project_dir,
@@ -50,7 +70,7 @@ def retrieve_with_mcp_heuristics(
         task_prompt=task_prompt,
     )
     
-    logger.info(f"📋 Created MCP server with {len(server.tools)} tools")
+    logger.info(f"📋 Created MCP server with {len(server.tools)} tools, {len(context_files)} files available")
     
     # Выполнить все tools с базовыми параметрами
     all_results = []

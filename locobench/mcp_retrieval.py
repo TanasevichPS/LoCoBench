@@ -83,6 +83,7 @@ class LoCoBenchMCPServer:
         self.task_prompt = task_prompt
         self.selected_files: Set[str] = set()
         self.tools = self._initialize_tools()
+        self._cached_project_files: Optional[Dict[str, str]] = None  # Кэш файлов из project_dir
     
     def _initialize_tools(self) -> List[MCPTool]:
         """Initialize tools based on task category"""
@@ -104,6 +105,40 @@ class LoCoBenchMCPServer:
         
         # Default tools
         return self._get_default_tools()
+    
+    def _get_files_for_search(self) -> Dict[str, str]:
+        """
+        Получить файлы для поиска: из context_files или загрузить из project_dir.
+        
+        Returns:
+            Dictionary mapping file paths to file contents
+        """
+        # Если context_files есть, использовать их
+        if self.context_files:
+            return self.context_files
+        
+        # Если есть кэш, использовать его
+        if self._cached_project_files is not None:
+            return self._cached_project_files
+        
+        # Попробовать загрузить из project_dir
+        if self.project_dir and self.project_dir.exists():
+            try:
+                from ..retrieval import _collect_project_code_files
+                
+                project_files = _collect_project_code_files(self.project_dir)
+                self._cached_project_files = {
+                    file_info["path"]: file_info["content"]
+                    for file_info in project_files
+                }
+                logger.debug(f"📁 Loaded {len(self._cached_project_files)} files from project_dir for MCP tools")
+                return self._cached_project_files
+            except Exception as e:
+                logger.debug(f"Failed to load files from project_dir: {e}")
+                self._cached_project_files = {}
+                return {}
+        
+        return {}
     
     # ==================== Security Analysis Tools ====================
     
@@ -167,7 +202,16 @@ class LoCoBenchMCPServer:
             security_keywords.extend(keywords.split(','))
         
         found_files = []
-        for file_path, content in self.context_files.items():
+        
+        # Если context_files пустой, попробовать загрузить из project_dir
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
+        for file_path, content in files_to_search.items():
+            if not content:  # Пропустить пустые файлы
+                continue
+                
             content_lower = content.lower()
             file_lower = file_path.lower()
             
@@ -194,8 +238,15 @@ class LoCoBenchMCPServer:
         # For now, return files that import security-related modules
         security_modules = ['hashlib', 'secrets', 'cryptography', 'jwt', 'bcrypt']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
+            if not content:
+                continue
             if any(f"import {mod}" in content or f"from {mod}" in content 
                    for mod in security_modules):
                 found_files.append({
@@ -218,8 +269,15 @@ class LoCoBenchMCPServer:
             'input', 'request', 'form', 'parameter', 'query'
         ]
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
+            if not content:
+                continue
             content_lower = content.lower()
             if any(pattern in content_lower for pattern in validation_patterns):
                 found_files.append({
@@ -285,8 +343,13 @@ class LoCoBenchMCPServer:
             'schema', 'layout', 'hierarchy', 'composition', 'decomposition'
         ]
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             file_lower = file_path.lower()
             
@@ -313,8 +376,13 @@ class LoCoBenchMCPServer:
     ) -> List[Dict[str, Any]]:
         """Map dependency hierarchy"""
         # Find files with many imports (likely core components)
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             import_count = content.count('import ') + content.count('from ')
             if import_count > 5:  # Files with many dependencies
                 found_files.append({
@@ -337,8 +405,13 @@ class LoCoBenchMCPServer:
             'adapter', 'decorator', 'facade', 'proxy', 'command'
         ]
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(pattern in content_lower for pattern in pattern_keywords):
                 found_files.append({
@@ -400,8 +473,13 @@ class LoCoBenchMCPServer:
     ) -> List[Dict[str, Any]]:
         """Trace execution flow"""
         # Find files with main functions or entry points
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             if 'if __name__' in content or 'def main' in content.lower():
                 found_files.append({
                     "path": file_path,
@@ -418,8 +496,13 @@ class LoCoBenchMCPServer:
         **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find functions related to target function"""
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             if function_name and function_name in content:
                 found_files.append({
                     "path": file_path,
@@ -439,8 +522,13 @@ class LoCoBenchMCPServer:
         """Analyze data flow"""
         data_keywords = ['data', 'process', 'transform', 'convert', 'parse']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(keyword in content_lower for keyword in data_keywords):
                 found_files.append({
@@ -502,8 +590,13 @@ class LoCoBenchMCPServer:
         """Find similar implementation examples"""
         # This would use semantic similarity to find similar code
         # For now, return files with similar structure
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             if 'def ' in content and 'class ' in content:
                 found_files.append({
                     "path": file_path,
@@ -522,8 +615,13 @@ class LoCoBenchMCPServer:
         """Identify integration points"""
         integration_keywords = ['api', 'endpoint', 'interface', 'service', 'handler']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(keyword in content_lower for keyword in integration_keywords):
                 found_files.append({
@@ -543,8 +641,13 @@ class LoCoBenchMCPServer:
         """Find related configuration files"""
         config_patterns = ['config', 'settings', 'constants', 'env', 'yaml', 'json']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             file_lower = file_path.lower()
             if any(pattern in file_lower for pattern in config_patterns):
                 found_files.append({
@@ -606,8 +709,13 @@ class LoCoBenchMCPServer:
         """Trace error path"""
         error_keywords = ['error', 'exception', 'fail', 'raise', 'catch']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(keyword in content_lower for keyword in error_keywords):
                 found_files.append({
@@ -627,8 +735,13 @@ class LoCoBenchMCPServer:
         """Find error handlers"""
         handler_patterns = ['try:', 'except', 'catch', 'error_handler', 'on_error']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             if any(pattern in content for pattern in handler_patterns):
                 found_files.append({
                     "path": file_path,
@@ -647,8 +760,13 @@ class LoCoBenchMCPServer:
         """Analyze test coverage"""
         test_patterns = ['test_', '_test', 'spec', 'specification']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             file_lower = file_path.lower()
             if any(pattern in file_lower for pattern in test_patterns):
                 found_files.append({
@@ -696,8 +814,13 @@ class LoCoBenchMCPServer:
     ) -> List[Dict[str, Any]]:
         """Identify refactoring targets"""
         # Find files with many similar patterns (potential duplication)
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             # Simple heuristic: files with many similar function definitions
             if content.count('def ') > 10:
                 found_files.append({
@@ -716,8 +839,13 @@ class LoCoBenchMCPServer:
     ) -> List[Dict[str, Any]]:
         """Map cross-file dependencies"""
         # Find files that import many other files (likely refactoring candidates)
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             import_count = content.count('import ') + content.count('from ')
             if import_count > 8:
                 found_files.append({
@@ -752,8 +880,13 @@ class LoCoBenchMCPServer:
         """Find integration points"""
         integration_keywords = ['integration', 'integrate', 'connect', 'bridge', 'adapter']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(keyword in content_lower for keyword in integration_keywords):
                 found_files.append({
@@ -788,8 +921,13 @@ class LoCoBenchMCPServer:
         """Find state management files"""
         state_keywords = ['state', 'session', 'cache', 'store', 'persist', 'memory']
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_lower = content.lower()
             if any(keyword in content_lower for keyword in state_keywords):
                 found_files.append({
@@ -825,8 +963,13 @@ class LoCoBenchMCPServer:
         # Extract keywords from task prompt
         task_words = set(self.task_prompt.lower().split())
         
+        # Получить файлы для поиска
+        files_to_search = self._get_files_for_search()
+        if not files_to_search:
+            return []
+        
         found_files = []
-        for file_path, content in self.context_files.items():
+        for file_path, content in files_to_search.items():
             content_words = set(content.lower().split())
             overlap = len(task_words & content_words)
             
@@ -868,10 +1011,15 @@ class LoCoBenchMCPServer:
         if not self.selected_files:
             return ""
         
+        # Получить файлы для форматирования (из context_files или project_dir)
+        files_to_format = self._get_files_for_search()
+        if not files_to_format:
+            return ""
+        
         parts = []
         for file_path in sorted(self.selected_files):
-            if file_path in self.context_files:
-                parts.append(f"### {file_path}\n```\n{self.context_files[file_path]}\n```")
+            if file_path in files_to_format:
+                parts.append(f"### {file_path}\n```\n{files_to_format[file_path]}\n```")
         
         return "\n\n".join(parts)
 
