@@ -14,6 +14,7 @@ from rich.console import Console
 from ..core.task import TaskCategory, DifficultyLevel
 from ..core.config import Config
 from .synthetic_generator import MultiLLMGenerator
+from ..retrieval import retrieve_relevant_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,7 @@ class ScenarioGenerator:
     ) -> Dict[str, str]:
         """
         Intelligently select files to meet target coverage requirements.
+        Uses retrieval to rank files by relevance to task category.
         """
         
         # Start with core files for the task category
@@ -377,11 +379,32 @@ class ScenarioGenerator:
         current_coverage = self._calculate_information_coverage(selected_files, project_files)
         
         if current_coverage >= target_coverage:
+            logger.debug(f"✅ Core files already achieve target coverage {target_coverage:.2f}")
             return selected_files
         
-        # Rank remaining files by relevance
+        # Use retrieval to rank remaining files by relevance
         remaining_files = {k: v for k, v in project_files.items() if k not in selected_files}
-        ranked_files = self._rank_files_by_relevance(task_category, remaining_files, aggressive)
+        
+        if not remaining_files:
+            logger.warning("⚠️ No remaining files to select after core files")
+            return selected_files
+        
+        # Create task prompt for retrieval based on category
+        task_prompt = self._create_retrieval_prompt(task_category, target_coverage, aggressive)
+        
+        # Use retrieval to rank files by relevance
+        try:
+            ranked_files = await self._rank_files_with_retrieval(
+                task_category,
+                task_prompt,
+                remaining_files,
+                aggressive
+            )
+            logger.debug(f"🔍 Retrieval ranked {len(ranked_files)} files for {task_category.value}")
+        except Exception as e:
+            logger.warning(f"⚠️ Retrieval failed, falling back to simple ranking: {e}")
+            # Fallback to original ranking method
+            ranked_files = self._rank_files_by_relevance(task_category, remaining_files, aggressive)
         
         # Add files until target coverage is met
         for file_path, _ in ranked_files:
@@ -389,9 +412,205 @@ class ScenarioGenerator:
             current_coverage = self._calculate_information_coverage(selected_files, project_files)
             
             if current_coverage >= target_coverage:
+                logger.debug(f"✅ Achieved target coverage {target_coverage:.2f} with {len(selected_files)} files")
                 break
         
         return selected_files
+    
+    def _create_retrieval_prompt(self, task_category: TaskCategory, target_coverage: float, aggressive: bool) -> str:
+        """Create a task prompt for retrieval based on category and target coverage."""
+        
+        category_descriptions = {
+            TaskCategory.ARCHITECTURAL_UNDERSTANDING: (
+                "Understand the system architecture, design patterns, component relationships, "
+                "and architectural decisions. Focus on main entry points, configuration files, "
+                "module structure, and architectural patterns."
+            ),
+            TaskCategory.CROSS_FILE_REFACTORING: (
+                "Refactor code across multiple files while maintaining functionality. "
+                "Focus on service files, managers, handlers, controllers, utilities, "
+                "and shared/common code that needs restructuring."
+            ),
+            TaskCategory.FEATURE_IMPLEMENTATION: (
+                "Implement new features and functionality. Focus on service files, API endpoints, "
+                "controllers, handlers, models, entities, repositories, and interfaces "
+                "where new features would be added."
+            ),
+            TaskCategory.BUG_INVESTIGATION: (
+                "Investigate and debug bugs. Focus on test files, error handling, exception files, "
+                "logging, debugging code, and implementation files that might contain bugs."
+            ),
+            TaskCategory.MULTI_SESSION_DEVELOPMENT: (
+                "Develop features over multiple sessions with context retention. "
+                "Focus on main application files, core services, models, configuration, "
+                "utilities, and common code that persists across sessions."
+            ),
+            TaskCategory.CODE_COMPREHENSION: (
+                "Comprehend complex code structures and logic. Focus on documentation, "
+                "readme files, main application files, core modules, and complex implementation files."
+            ),
+            TaskCategory.INTEGRATION_TESTING: (
+                "Test integration between components. Focus on test files, integration tests, "
+                "API files, service files, controllers, and client code."
+            ),
+            TaskCategory.SECURITY_ANALYSIS: (
+                "Analyze security vulnerabilities and implement security best practices. "
+                "Focus on authentication files, security modules, login systems, password handling, "
+                "token management, cryptography, hashing, encryption, and SSL/certificate files."
+            ),
+        }
+        
+        base_description = category_descriptions.get(
+            task_category,
+            f"Select relevant files for {task_category.value.replace('_', ' ')} task"
+        )
+        
+        coverage_context = ""
+        if target_coverage >= 0.80:
+            coverage_context = " Select comprehensive set of files covering most of the project."
+        elif target_coverage >= 0.60:
+            coverage_context = " Select substantial set of files covering major parts of the project."
+        elif target_coverage >= 0.40:
+            coverage_context = " Select moderate set of files covering core functionality."
+        else:
+            coverage_context = " Select essential files covering key functionality."
+        
+        if aggressive:
+            coverage_context += " Prioritize larger and more complex files."
+        
+        return f"{base_description}.{coverage_context}"
+    
+    async def _rank_files_with_retrieval(
+        self,
+        task_category: TaskCategory,
+        task_prompt: str,
+        files: Dict[str, str],
+        aggressive: bool = False
+    ) -> List[Tuple[str, float]]:
+        """
+        Rank files using retrieval to find most relevant files for the task.
+        Returns list of (file_path, relevance_score) tuples sorted by relevance.
+        Uses direct embedding-based ranking for accurate scores.
+        """
+        
+        if not files:
+            return []
+        
+        # Use direct ranking method for better accuracy
+        try:
+            file_scores = await self._rank_files_directly(task_category, task_prompt, files, aggressive)
+            
+            # Convert to list of tuples and sort by score
+            ranked_files = [(path, file_scores.get(path, 0.0)) for path in files.keys()]
+            ranked_files.sort(key=lambda x: x[1], reverse=True)
+            
+            if ranked_files:
+                logger.debug(
+                    f"📊 Retrieval ranked {len(ranked_files)} files for {task_category.value}, "
+                    f"top score: {ranked_files[0][1]:.3f}, bottom score: {ranked_files[-1][1]:.3f}"
+                )
+            
+            return ranked_files
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error in retrieval ranking: {e}, falling back to simple ranking")
+            # Fallback to original method
+            return self._rank_files_by_relevance(task_category, files, aggressive)
+    
+    async def _rank_files_directly(
+        self,
+        task_category: TaskCategory,
+        task_prompt: str,
+        files: Dict[str, str],
+        aggressive: bool
+    ) -> Dict[str, float]:
+        """
+        Rank files directly using embedding-based retrieval.
+        Uses category-specific query expansion and multi-query retrieval for better accuracy.
+        """
+        from ..retrieval import (
+            _rank_files_with_embeddings,
+            _load_embedding_model,
+            _expand_query_for_retrieval,
+            _generate_multi_queries,
+            _get_category_specific_config
+        )
+        
+        retrieval_config = self.config.retrieval
+        
+        # Load embedding model
+        model = _load_embedding_model(
+            retrieval_config.local_model_path,
+            retrieval_config.model_name
+        )
+        
+        if not model:
+            logger.warning("⚠️ Could not load embedding model for direct ranking")
+            return {}
+        
+        # Convert files to list format for ranking
+        file_list = [
+            {"path": path, "content": content, "length": len(content)}
+            for path, content in files.items()
+        ]
+        
+        if not file_list:
+            return {}
+        
+        # Get category-specific config for better retrieval
+        category_config = _get_category_specific_config(task_category.value)
+        
+        # Expand query with category-specific terms
+        expanded_query = _expand_query_for_retrieval(task_prompt, task_category.value)
+        
+        # Use multi-query retrieval for better accuracy
+        if retrieval_config.use_multi_query:
+            multi_queries = _generate_multi_queries(
+                task_prompt,
+                num_queries=min(5, len(file_list)),  # Limit queries based on file count
+                task_type=task_category.value
+            )
+            
+            # Aggregate scores from multiple queries
+            all_scores = {}
+            query_weights = [1.0] + [0.8] * (len(multi_queries) - 1)  # First query has higher weight
+            
+            for query_idx, query in enumerate(multi_queries):
+                query_expanded = _expand_query_for_retrieval(query, task_category.value)
+                ranked_files = _rank_files_with_embeddings(model, query, file_list, expanded_query=query_expanded)
+                
+                weight = query_weights[query_idx] if query_idx < len(query_weights) else 0.7
+                
+                for file_info in ranked_files:
+                    file_path = file_info["path"]
+                    similarity = file_info.get("similarity", 0.0)
+                    
+                    if file_path not in all_scores:
+                        all_scores[file_path] = []
+                    all_scores[file_path].append(similarity * weight)
+            
+            # Average scores across queries (weighted)
+            file_scores = {}
+            for file_path, scores in all_scores.items():
+                file_scores[file_path] = sum(scores) / len(scores)
+        else:
+            # Single query ranking
+            ranked_files = _rank_files_with_embeddings(model, task_prompt, file_list, expanded_query=expanded_query)
+            file_scores = {
+                file_info["path"]: file_info.get("similarity", 0.0)
+                for file_info in ranked_files
+            }
+        
+        # Apply aggressive mode boost if needed
+        if aggressive:
+            # Boost larger files
+            for file_path in file_scores:
+                file_info = next((f for f in file_list if f["path"] == file_path), None)
+                if file_info:
+                    size_score = min(file_info["length"] / 10000, 1.0)
+                    file_scores[file_path] += size_score * 0.2  # Boost by up to 0.2
+        
+        return file_scores
 
     def _get_core_files_for_category(self, task_category: TaskCategory, project_files: Dict[str, str]) -> List[str]:
         """Get core files that are essential for each task category."""
