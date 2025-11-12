@@ -1049,26 +1049,26 @@ def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any
             'boost_keywords': ['bug', 'error', 'exception', 'fail', 'issue', 'problem', 'debug', 'trace'],
         },
         'architectural_understanding': {
-            'file_multiplier': 1.60,  # ВЕРНУТО из f1922da (было 2.40) - оптимальное значение для максимального скора 2.115
-            'level1_ratio': 0.50,     # ВЕРНУТО из f1922da (было 0.38) - больше семантики для точного поиска
-            'level2_ratio': 0.40,     # ВЕРНУТО из f1922da (было 0.52) - сбалансированные зависимости
+            'file_multiplier': 1.75,  # Увеличено с 1.60 - больше файлов, но с акцентом на качество через семантику
+            'level1_ratio': 0.58,     # Увеличено с 0.50 - ЕЩЕ БОЛЬШЕ семантики для точного поиска (текущий результат: 1.754)
+            'level2_ratio': 0.32,     # Уменьшено с 0.40 - меньше зависимостей, которые могут добавлять шум
             'level3_ratio': 0.10,     # Важные файлы
-            'hybrid_alpha': 0.65,     # Оставить текущее значение
-            'dependency_depth': 3,     # ВЕРНУТО из f1922da (было 4) - умеренная глубина
-            'dependency_files_per_level': 25,  # ВЕРНУТО из f1922da (было 45) - умеренное количество
-            'chunks_per_file': 5,     # ВЕРНУТО из f1922da (было 9) - стандартное значение
+            'hybrid_alpha': 0.72,     # Увеличено с 0.65 - больше семантики в hybrid search для лучшего качества
+            'dependency_depth': 3,     # Оставить умеренную глубину
+            'dependency_files_per_level': 25,  # Оставить умеренное количество
+            'chunks_per_file': 5,     # Стандартное значение
             'prioritize_test_files': False,
             'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract', 'factory', 'builder', 'service', 'manager', 'config', 'main', 'entry'],
         },
         'code_comprehension': {
-            'file_multiplier': 1.25,  # ВЕРНУТО из f1922da (было 2.10) - оптимальное значение для максимального скора 2.115
-            'level1_ratio': 0.60,     # ВЕРНУТО из f1922da (было 0.48) - больше семантики для точного поиска
-            'level2_ratio': 0.35,     # ВЕРНУТО из f1922da (было 0.47) - сбалансированные зависимости
+            'file_multiplier': 1.40,  # Увеличено с 1.25 - больше файлов, но с акцентом на качество через семантику
+            'level1_ratio': 0.68,     # Увеличено с 0.60 - ЕЩЕ БОЛЬШЕ семантики для точного поиска (текущий результат: 1.943)
+            'level2_ratio': 0.27,     # Уменьшено с 0.35 - меньше зависимостей, которые могут добавлять шум
             'level3_ratio': 0.05,     # Важные файлы
-            'hybrid_alpha': 0.68,     # Оставить текущее значение
-            'dependency_depth': 3,     # ВЕРНУТО из f1922da (было 4) - умеренная глубина
-            'dependency_files_per_level': 20,  # ВЕРНУТО из f1922da (было 40) - умеренное количество
-            'chunks_per_file': 5,     # ВЕРНУТО из f1922da (было 8) - стандартное значение
+            'hybrid_alpha': 0.75,     # Увеличено с 0.68 - больше семантики в hybrid search для лучшего качества
+            'dependency_depth': 3,     # Оставить умеренную глубину
+            'dependency_files_per_level': 20,  # Оставить умеренное количество
+            'chunks_per_file': 5,     # Стандартное значение
             'prioritize_test_files': False,
             'boost_keywords': ['comprehension', 'understand', 'trace', 'follow', 'flow', 'execution', 'call', 'method', 'function', 'handler', 'processor', 'service', 'controller'],
         },
