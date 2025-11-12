@@ -1303,9 +1303,46 @@ def retrieve_relevant_embedding(
         smart_chunking: If True, split files into chunks and select most relevant chunks
         chunks_per_file: Maximum number of chunks to select per file (when smart_chunking=True)
         chunk_size: Size of each chunk in characters (when smart_chunking=True)
+        use_mcp: If True, use MCP-based intelligent retrieval instead of standard retrieval
+        mcp_provider: LLM provider for MCP ("openai", "anthropic", "ollama", "huggingface", "local_openai")
+        mcp_model: Model name for MCP
+        mcp_base_url: Base URL for local providers
+        mcp_api_key: API key for local providers
+        config: Config object for MCP
     """
     start_time = time.perf_counter()
-
+    
+    # Try MCP-based retrieval if enabled
+    if use_mcp and task_category and project_dir:
+        try:
+            from .mcp_retrieval import retrieve_with_mcp
+            
+            logger.info(f"🔧 Using MCP-based retrieval (provider={mcp_provider}, model={mcp_model})")
+            mcp_result = retrieve_with_mcp(
+                context_files=context_files or {},
+                task_prompt=task_prompt,
+                task_category=task_category,
+                project_dir=project_dir,
+                config=config,
+                provider=mcp_provider or "ollama",
+                model=mcp_model,
+                base_url=mcp_base_url,
+                api_key=mcp_api_key,
+                use_llm=True,
+            )
+            
+            if mcp_result:
+                logger.info(f"✅ MCP retrieval returned {len(mcp_result)} characters")
+                return mcp_result
+            else:
+                logger.warning("⚠️ MCP retrieval returned empty result, falling back to standard retrieval")
+        except Exception as e:
+            logger.warning(f"⚠️ MCP retrieval failed: {e}. Falling back to standard retrieval.")
+            import traceback
+            logger.debug(traceback.format_exc())
+            # Fall through to standard retrieval
+    
+    # Standard retrieval (existing code)
     candidates = _prepare_candidate_files(context_files, project_dir)
     if not candidates:
         logger.warning("Retrieval: no candidate files found (project_dir=%s)", project_dir)
@@ -2252,6 +2289,12 @@ def retrieve_relevant(
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
     task_category: Optional[str] = None,  # Add task_category parameter
+    use_mcp: bool = False,  # Use MCP-based retrieval
+    mcp_provider: Optional[str] = None,  # MCP provider
+    mcp_model: Optional[str] = None,  # MCP model
+    mcp_base_url: Optional[str] = None,  # MCP base URL
+    mcp_api_key: Optional[str] = None,  # MCP API key
+    config: Optional[Any] = None,  # Config object
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -2271,6 +2314,12 @@ def retrieve_relevant(
             use_hybrid_search=use_hybrid_search,
             hybrid_alpha=hybrid_alpha,
             task_category=task_category,  # Pass task_category
+            use_mcp=use_mcp,  # Pass MCP parameters
+            mcp_provider=mcp_provider,
+            mcp_model=mcp_model,
+            mcp_base_url=mcp_base_url,
+            mcp_api_key=mcp_api_key,
+            config=config,
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")

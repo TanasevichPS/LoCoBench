@@ -2394,6 +2394,12 @@ class LoCoBenchEvaluator:
                     use_hybrid_search=getattr(retrieval_config, 'use_hybrid_search', True),
                     hybrid_alpha=getattr(retrieval_config, 'hybrid_alpha', 0.7),
                     task_category=task_category,  # Pass task_category to retrieval
+                    use_mcp=getattr(retrieval_config, 'use_mcp', False),  # MCP parameters
+                    mcp_provider=getattr(retrieval_config, 'mcp_provider', None),
+                    mcp_model=getattr(retrieval_config, 'mcp_model', None),
+                    mcp_base_url=getattr(retrieval_config, 'mcp_base_url', None),
+                    mcp_api_key=getattr(retrieval_config, 'mcp_api_key', None),
+                    config=self.config,  # Pass config object for MCP
                 )
 
                 if retrieved_context:

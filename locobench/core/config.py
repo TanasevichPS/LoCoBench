@@ -159,6 +159,13 @@ class RetrievalConfig:
     # Optional local path to embedding model (SentenceTransformer) to avoid downloads
     local_model_path: Optional[str] = None
     
+    # MCP-based retrieval configuration
+    use_mcp: bool = False  # Enable MCP-based intelligent retrieval
+    mcp_provider: Optional[str] = None  # "openai", "anthropic", "ollama", "huggingface", "local_openai"
+    mcp_model: Optional[str] = None  # Model name for MCP
+    mcp_base_url: Optional[str] = None  # Base URL for local providers
+    mcp_api_key: Optional[str] = None  # API key for local providers
+    
     # Smart chunking: split files into chunks and select most relevant chunks
     smart_chunking: bool = True
     
