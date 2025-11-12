@@ -207,6 +207,9 @@ def _rank_chunks_with_embeddings(
 def _normalize_relative_path(raw_path: str) -> str:
     """Normalise file paths to POSIX-style relative strings."""
     path = raw_path.replace("\\", "/")
+    # Нормализовать двойные слеши в одинарные
+    while "//" in path:
+        path = path.replace("//", "/")
     while path.startswith("./"):
         path = path[2:]
     return path.lstrip("/")
@@ -2406,8 +2409,18 @@ def load_context_files_from_scenario(
         return {}
 
     loaded_files: Dict[str, str] = {}
+    
+    # Определить базовое имя проекта из project_dir для удаления префикса из путей
+    project_base_name = project_dir.name if project_dir else None
+    
     for raw_path in context_obj:
         normalized_path = _normalize_relative_path(str(raw_path))
+        
+        # Если путь начинается с имени проекта, убрать этот префикс
+        # Например: "EduGate_ScholarLink/src/file.c" -> "src/file.c" если project_dir уже указывает на EduGate_ScholarLink
+        if project_base_name and normalized_path.startswith(project_base_name + "/"):
+            normalized_path = normalized_path[len(project_base_name) + 1:]
+        
         candidate = project_dir / normalized_path
 
         if candidate.exists():
@@ -2417,7 +2430,17 @@ def load_context_files_from_scenario(
             except Exception as exc:  # pragma: no cover
                 logger.warning("Failed to read %s: %s", candidate, exc)
 
-        logger.debug("Context file %s not found relative to %s", raw_path, project_dir)
+        # Попробовать также с полным путем (если префикс не был удален)
+        if normalized_path != _normalize_relative_path(str(raw_path)):
+            candidate_full = project_dir / _normalize_relative_path(str(raw_path))
+            if candidate_full.exists():
+                try:
+                    loaded_files[_normalize_relative_path(str(raw_path))] = candidate_full.read_text(encoding="utf-8", errors="ignore")
+                    continue
+                except Exception as exc:
+                    logger.debug("Failed to read %s: %s", candidate_full, exc)
+
+        logger.debug("Context file %s not found relative to %s (tried: %s)", raw_path, project_dir, candidate)
 
     if not loaded_files:
         logger.warning(

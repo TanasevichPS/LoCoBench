@@ -42,21 +42,26 @@ def retrieve_with_mcp_heuristics(
     """
     logger.info(f"🔧 Using MCP heuristics-based retrieval for category: {task_category}")
     
-    # Если context_files пустой, загрузить файлы из project_dir
-    if not context_files and project_dir and project_dir.exists():
-        logger.info(f"📁 Loading files from project directory: {project_dir}")
-        try:
-            from ..retrieval import _collect_project_code_files
-            
-            project_files = _collect_project_code_files(project_dir)
-            context_files = {
-                file_info["path"]: file_info["content"]
-                for file_info in project_files
-            }
-            logger.info(f"✅ Loaded {len(context_files)} files from project directory")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load files from project_dir: {e}")
-            context_files = {}
+    # Если context_files пустой, попробовать загрузить файлы из project_dir
+    # или использовать пути из scenario если они есть
+    if not context_files:
+        if project_dir and project_dir.exists():
+            logger.info(f"📁 context_files пустой, загружаю файлы из project_dir: {project_dir}")
+            try:
+                from ..retrieval import _collect_project_code_files
+                
+                project_files = _collect_project_code_files(project_dir)
+                context_files = {
+                    file_info["path"]: file_info["content"]
+                    for file_info in project_files
+                }
+                logger.info(f"✅ Loaded {len(context_files)} files from project directory")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load files from project_dir: {e}")
+                context_files = {}
+        else:
+            logger.warning(f"⚠️ context_files пустой и project_dir недоступен: {project_dir}")
+            return ""
     
     if not context_files:
         logger.warning("⚠️ No context files available for MCP retrieval")

@@ -124,20 +124,23 @@ class LoCoBenchMCPServer:
         # Попробовать загрузить из project_dir
         if self.project_dir and self.project_dir.exists():
             try:
-                from ..retrieval import _collect_project_code_files
+                from ..retrieval import _collect_project_code_files, _normalize_relative_path
                 
                 project_files = _collect_project_code_files(self.project_dir)
                 self._cached_project_files = {
                     file_info["path"]: file_info["content"]
                     for file_info in project_files
                 }
-                logger.debug(f"📁 Loaded {len(self._cached_project_files)} files from project_dir for MCP tools")
+                logger.info(f"📁 Loaded {len(self._cached_project_files)} files from project_dir {self.project_dir} for MCP tools")
                 return self._cached_project_files
             except Exception as e:
-                logger.debug(f"Failed to load files from project_dir: {e}")
+                logger.warning(f"⚠️ Failed to load files from project_dir {self.project_dir}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 self._cached_project_files = {}
                 return {}
         
+        logger.debug(f"⚠️ No files available: context_files={len(self.context_files)}, project_dir={self.project_dir}")
         return {}
     
     # ==================== Security Analysis Tools ====================
