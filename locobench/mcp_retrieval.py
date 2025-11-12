@@ -1038,6 +1038,8 @@ def retrieve_with_mcp(
     use_llm: bool = True,
     base_url: Optional[str] = None,  # For local providers (Ollama, LocalAI)
     api_key: Optional[str] = None,  # For LocalAI
+    max_context_tokens: Optional[int] = None,  # Ограничение размера контекста
+    top_percent: Optional[float] = None,  # Процент файлов для выбора
 ) -> str:
     """
     Synchronous wrapper for retrieve_with_mcp_async.
@@ -1085,6 +1087,8 @@ def retrieve_with_mcp(
                             use_llm=use_llm,
                             base_url=base_url,
                             api_key=api_key,
+                            max_context_tokens=max_context_tokens,
+                            top_percent=top_percent,
                         )
                     )
                 finally:
@@ -1106,6 +1110,8 @@ def retrieve_with_mcp(
                     use_llm=use_llm,
                     base_url=base_url,
                     api_key=api_key,
+                    max_context_tokens=max_context_tokens,
+                    top_percent=top_percent,
                 )
             )
     except RuntimeError:
