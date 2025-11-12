@@ -1144,6 +1144,8 @@ async def retrieve_with_mcp_async(
     use_llm: bool = True,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    max_context_tokens: Optional[int] = None,  # Ограничение размера контекста
+    top_percent: Optional[float] = None,  # Процент файлов для выбора
 ) -> str:
     """
     Async main entry point for MCP-based retrieval.
@@ -1225,6 +1227,8 @@ async def retrieve_with_mcp_async(
             task_prompt=task_prompt,
             task_category=task_category,
             project_dir=project_dir,
+            max_context_tokens=max_context_tokens,
+            top_percent=top_percent,
         )
     except ImportError:
         # Если модуль недоступен, используем базовую версию
