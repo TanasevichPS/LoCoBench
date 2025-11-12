@@ -861,20 +861,112 @@ def retrieve_with_mcp(
     task_prompt: str,
     task_category: str,
     project_dir: Path,
-    llm_client=None,  # LLM client for tool calling
+    config=None,  # Config object for LLM clients
+    provider: str = "openai",
+    model: Optional[str] = None,
+    use_llm: bool = True,
 ) -> str:
     """
-    Main entry point for MCP-based retrieval.
+    Synchronous wrapper for retrieve_with_mcp_async.
     
-    This function would integrate with an LLM to intelligently select files
-    using MCP tools. For now, it's a placeholder that demonstrates the structure.
+    Main entry point for MCP-based retrieval.
     
     Args:
         context_files: Available context files
         task_prompt: Task description
         task_category: Category of the task
         project_dir: Project directory
-        llm_client: LLM client for tool calling (Anthropic/OpenAI)
+        config: Configuration object (optional, for LLM clients)
+        provider: LLM provider ("openai" or "anthropic")
+        model: Model name (optional, uses default from config)
+        use_llm: Whether to use LLM for tool calling (default: True)
+    
+    Returns:
+        Formatted context string with selected files
+    """
+    import asyncio
+    
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running, we need to use a different approach
+            import concurrent.futures
+            
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(
+                        retrieve_with_mcp_async(
+                            context_files=context_files,
+                            task_prompt=task_prompt,
+                            task_category=task_category,
+                            project_dir=project_dir,
+                            config=config,
+                            provider=provider,
+                            model=model,
+                            use_llm=use_llm,
+                        )
+                    )
+                finally:
+                    new_loop.close()
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_in_thread)
+                return future.result(timeout=300)  # 5 minute timeout
+        else:
+            return loop.run_until_complete(
+                retrieve_with_mcp_async(
+                    context_files=context_files,
+                    task_prompt=task_prompt,
+                    task_category=task_category,
+                    project_dir=project_dir,
+                    config=config,
+                    provider=provider,
+                    model=model,
+                    use_llm=use_llm,
+                )
+            )
+    except RuntimeError:
+        # No event loop, create a new one
+        return asyncio.run(
+            retrieve_with_mcp_async(
+                context_files=context_files,
+                task_prompt=task_prompt,
+                task_category=task_category,
+                project_dir=project_dir,
+                config=config,
+                provider=provider,
+                model=model,
+                use_llm=use_llm,
+            )
+
+
+async def retrieve_with_mcp_async(
+    context_files: Dict[str, str],
+    task_prompt: str,
+    task_category: str,
+    project_dir: Path,
+    config=None,  # Config object for LLM clients
+    provider: str = "openai",
+    model: Optional[str] = None,
+    use_llm: bool = True,
+) -> str:
+    """
+    Async main entry point for MCP-based retrieval.
+    
+    This function integrates with an LLM to intelligently select files
+    using MCP tools. If use_llm=False, falls back to simple heuristic-based selection.
+    
+    Args:
+        context_files: Available context files
+        task_prompt: Task description
+        task_category: Category of the task
+        project_dir: Project directory
+        config: Configuration object (optional, for LLM clients)
+        provider: LLM provider ("openai" or "anthropic")
+        model: Model name (optional, uses default from config)
+        use_llm: Whether to use LLM for tool calling (default: True)
     
     Returns:
         Formatted context string with selected files
@@ -886,12 +978,48 @@ def retrieve_with_mcp(
         task_prompt=task_prompt,
     )
     
-    # TODO: Integrate with LLM for intelligent tool calling
-    # For now, execute default tool as example
+    if use_llm:
+        # Use LLM for intelligent tool calling
+        try:
+            from .mcp_llm_integration import retrieve_with_mcp_llm
+            
+            return await retrieve_with_mcp_llm(
+                context_files=context_files,
+                task_prompt=task_prompt,
+                task_category=task_category,
+                project_dir=project_dir,
+                config=config,
+                provider=provider,
+                model=model,
+            )
+        except Exception as e:
+            logger.warning(f"MCP LLM integration failed: {e}. Falling back to heuristic-based selection.")
+            import traceback
+            logger.debug(traceback.format_exc())
+            # Fall through to heuristic-based selection
+    
+    # Fallback: Simple heuristic-based selection
     if server.tools:
-        default_tool = server.tools[0]
-        keywords = " ".join(set(task_prompt.lower().split()[:10]))
-        results = default_tool.execute(keywords=keywords)
+        # Execute all tools with basic parameters
+        all_results = []
+        for tool in server.tools:
+            try:
+                # Extract keywords from task prompt
+                keywords = " ".join(set(task_prompt.lower().split()[:10]))
+                results = tool.execute(keywords=keywords)
+                all_results.extend(results)
+            except Exception as e:
+                logger.debug(f"Tool {tool.name} failed: {e}")
+        
+        # Deduplicate by path
+        seen_paths = set()
+        unique_results = []
+        for result in all_results:
+            path = result.get("path", "")
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                unique_results.append(result)
+                server.selected_files.add(path)
         
         # Format results
         return server.format_selected_context()
