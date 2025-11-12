@@ -57,36 +57,119 @@ def retrieve_with_mcp_heuristics(
     
     for tool in server.tools:
         try:
+            # Получить параметры tool из его определения
+            tool_params_def = tool.parameters  # Dict с описаниями параметров
+            tool_params = {}
+            
             # Извлечь ключевые слова из задачи
             task_words = set(task_prompt.lower().split())
             keywords = " ".join(sorted(task_words)[:15])  # Первые 15 уникальных слов
             
-            # Выполнить tool с базовыми параметрами
-            # Каждый tool может принимать keywords как параметр
-            tool_params = {"keywords": keywords}
+            # Заполнить параметры на основе определения tool и типа задачи
+            for param_name in tool_params_def.keys():
+                if param_name == "keywords":
+                    # Добавить keywords с расширением для категории
+                    base_keywords = keywords
+                    if "security" in task_category.lower():
+                        base_keywords += " security auth validate sanitize"
+                    elif "architectural" in task_category.lower():
+                        base_keywords += " architecture design pattern component"
+                    elif "comprehension" in task_category.lower():
+                        base_keywords += " trace flow execution call"
+                    tool_params[param_name] = base_keywords
+                
+                elif param_name == "file_patterns":
+                    if "security" in task_category.lower():
+                        tool_params[param_name] = "auth security validate"
+                    else:
+                        tool_params[param_name] = ""
+                
+                elif param_name == "component_types":
+                    if "architectural" in task_category.lower():
+                        tool_params[param_name] = "interface abstract pattern"
+                    else:
+                        tool_params[param_name] = ""
+                
+                elif param_name == "feature_type":
+                    # Извлечь тип функции из задачи
+                    tool_params[param_name] = keywords.split()[0] if keywords else ""
+                
+                elif param_name == "similar_features":
+                    tool_params[param_name] = keywords
+                
+                elif param_name == "feature_requirements":
+                    tool_params[param_name] = task_prompt[:200]  # Первые 200 символов
+                
+                elif param_name == "feature_domain":
+                    # Извлечь домен из первых слов задачи
+                    tool_params[param_name] = keywords.split()[0] if keywords else ""
+                
+                elif param_name == "function_name":
+                    # Попытаться найти имя функции в задаче
+                    import re
+                    func_match = re.search(r'\b(function|def|method)\s+(\w+)', task_prompt, re.IGNORECASE)
+                    tool_params[param_name] = func_match.group(2) if func_match else ""
+                
+                elif param_name == "entry_point":
+                    tool_params[param_name] = "main"  # По умолчанию
+                
+                elif param_name == "target_function":
+                    # Попытаться найти целевую функцию
+                    import re
+                    func_match = re.search(r'\b(function|def|method)\s+(\w+)', task_prompt, re.IGNORECASE)
+                    tool_params[param_name] = func_match.group(2) if func_match else ""
+                
+                elif param_name == "data_sources" or param_name == "data_sinks":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "error_message" or param_name == "error_location":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "error_type":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "problem_area":
+                    tool_params[param_name] = keywords
+                
+                elif param_name == "refactoring_goal":
+                    tool_params[param_name] = task_prompt[:200]
+                
+                elif param_name == "target_files":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "components":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "state_type":
+                    tool_params[param_name] = ""
+                
+                elif param_name == "input_sources":
+                    tool_params[param_name] = "API forms files"
+                
+                elif param_name == "entry_points" or param_name == "sensitive_operations":
+                    tool_params[param_name] = ""
+                
+                else:
+                    # Для неизвестных параметров использовать пустую строку или keywords
+                    tool_params[param_name] = keywords if "keyword" in param_name.lower() else ""
             
-            # Для некоторых tools добавить специфичные параметры
-            if "security" in task_category.lower():
-                tool_params.update({
-                    "keywords": keywords + " security auth validate sanitize",
-                    "file_patterns": "auth security validate",
-                })
-            elif "architectural" in task_category.lower():
-                tool_params.update({
-                    "keywords": keywords + " architecture design pattern component",
-                    "component_types": "interface abstract pattern",
-                })
-            elif "comprehension" in task_category.lower():
-                tool_params.update({
-                    "keywords": keywords + " trace flow execution call",
-                    "function_name": "",  # Будет извлечено из prompt
-                })
-            
+            # Выполнить tool только с параметрами, которые он принимает
             results = tool.execute(**tool_params)
             all_results.extend(results)
             
             logger.debug(f"✅ Tool '{tool.name}': found {len(results)} files")
             
+        except TypeError as e:
+            # Ошибка несоответствия параметров - попробовать с минимальными параметрами
+            logger.debug(f"⚠️ Tool '{tool.name}' parameter mismatch, trying minimal params: {e}")
+            try:
+                # Попробовать выполнить без параметров или с пустыми значениями
+                minimal_params = {param: "" for param in tool.parameters.keys()}
+                results = tool.execute(**minimal_params)
+                all_results.extend(results)
+                logger.debug(f"✅ Tool '{tool.name}': found {len(results)} files (minimal params)")
+            except Exception as e2:
+                logger.warning(f"⚠️ Tool '{tool.name}' failed even with minimal params: {e2}")
         except Exception as e:
             logger.warning(f"⚠️ Tool '{tool.name}' failed: {e}")
             # Продолжить с другими tools

@@ -153,6 +153,7 @@ class LoCoBenchMCPServer:
         self,
         keywords: str = "",
         file_patterns: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find files related to security"""
         security_keywords = [
@@ -186,6 +187,7 @@ class LoCoBenchMCPServer:
         self,
         entry_points: str = "",
         sensitive_operations: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Analyze dependency graph for security concerns"""
         # This would analyze imports and call graphs
@@ -208,6 +210,7 @@ class LoCoBenchMCPServer:
     def _find_input_validation_points(
         self,
         input_sources: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find input validation points"""
         validation_patterns = [
@@ -273,6 +276,7 @@ class LoCoBenchMCPServer:
     def _identify_core_components(
         self,
         component_types: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Identify core architectural components"""
         architectural_keywords = [
@@ -305,6 +309,7 @@ class LoCoBenchMCPServer:
         self,
         root_components: str = "",
         max_depth: str = "3",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Map dependency hierarchy"""
         # Find files with many imports (likely core components)
@@ -324,6 +329,7 @@ class LoCoBenchMCPServer:
     def _find_design_patterns(
         self,
         pattern_types: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find design patterns in code"""
         pattern_keywords = [
@@ -390,6 +396,7 @@ class LoCoBenchMCPServer:
         self,
         entry_point: str = "",
         target_function: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Trace execution flow"""
         # Find files with main functions or entry points
@@ -408,6 +415,7 @@ class LoCoBenchMCPServer:
     def _find_related_functions(
         self,
         function_name: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find functions related to target function"""
         found_files = []
@@ -426,6 +434,7 @@ class LoCoBenchMCPServer:
         self,
         data_sources: str = "",
         data_sinks: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Analyze data flow"""
         data_keywords = ['data', 'process', 'transform', 'convert', 'parse']
@@ -488,6 +497,7 @@ class LoCoBenchMCPServer:
         self,
         feature_type: str = "",
         similar_features: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find similar implementation examples"""
         # This would use semantic similarity to find similar code
@@ -507,6 +517,7 @@ class LoCoBenchMCPServer:
     def _identify_integration_points(
         self,
         feature_requirements: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Identify integration points"""
         integration_keywords = ['api', 'endpoint', 'interface', 'service', 'handler']
@@ -527,6 +538,7 @@ class LoCoBenchMCPServer:
     def _find_related_configurations(
         self,
         feature_domain: str = "",
+        **kwargs,  # Принять дополнительные параметры для совместимости
     ) -> List[Dict[str, Any]]:
         """Find related configuration files"""
         config_patterns = ['config', 'settings', 'constants', 'env', 'yaml', 'json']
@@ -589,6 +601,7 @@ class LoCoBenchMCPServer:
         self,
         error_message: str = "",
         error_location: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Trace error path"""
         error_keywords = ['error', 'exception', 'fail', 'raise', 'catch']
@@ -609,6 +622,7 @@ class LoCoBenchMCPServer:
     def _find_error_handlers(
         self,
         error_type: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Find error handlers"""
         handler_patterns = ['try:', 'except', 'catch', 'error_handler', 'on_error']
@@ -628,6 +642,7 @@ class LoCoBenchMCPServer:
     def _analyze_test_coverage(
         self,
         problem_area: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Analyze test coverage"""
         test_patterns = ['test_', '_test', 'spec', 'specification']
@@ -677,6 +692,7 @@ class LoCoBenchMCPServer:
     def _identify_refactoring_targets(
         self,
         refactoring_goal: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Identify refactoring targets"""
         # Find files with many similar patterns (potential duplication)
@@ -696,6 +712,7 @@ class LoCoBenchMCPServer:
     def _map_cross_file_dependencies(
         self,
         target_files: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Map cross-file dependencies"""
         # Find files that import many other files (likely refactoring candidates)
@@ -730,6 +747,7 @@ class LoCoBenchMCPServer:
     def _find_integration_points(
         self,
         components: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Find integration points"""
         integration_keywords = ['integration', 'integrate', 'connect', 'bridge', 'adapter']
@@ -765,6 +783,7 @@ class LoCoBenchMCPServer:
     def _find_state_management(
         self,
         state_type: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Find state management files"""
         state_keywords = ['state', 'session', 'cache', 'store', 'persist', 'memory']
@@ -800,6 +819,7 @@ class LoCoBenchMCPServer:
     def _find_relevant_files_default(
         self,
         keywords: str = "",
+        **kwargs,
     ) -> List[Dict[str, Any]]:
         """Default file finder"""
         # Extract keywords from task prompt
