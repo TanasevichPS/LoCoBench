@@ -2273,9 +2273,8 @@ class LoCoBenchEvaluator:
         else:
             logger.debug("⚠️ Project directory not resolved for scenario %s", scenario.get('id', 'unknown'))
 
-        # Determine if we should load all project files (for hard/expert scenarios)
+        # Get difficulty for logging
         difficulty = scenario.get('difficulty', '').lower()
-        should_load_all_files = difficulty in ['hard', 'expert']
         
         retrieved_context = ""
         if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
@@ -2289,69 +2288,90 @@ class LoCoBenchEvaluator:
 
                 context_obj = scenario.get('context_files')
                 if isinstance(context_obj, dict):
-                    # Context files already provided as dict with content
+                    # Context files already provided as dict with content - use only these files
                     context_files_content = {
                         path: content for path, content in context_obj.items() if isinstance(content, str)
                     }
-                    # For hard/expert: if we have project_dir, also load all project files for retrieval
-                    if should_load_all_files and project_dir and project_dir.exists():
-                        logger.info("📚 Loading additional project files for hard/expert scenario")
-                        all_project_files = load_context_files_from_scenario(
-                            scenario,
-                            project_dir=project_dir,
-                            include_all_project_files=True,
-                        )
-                        # Merge with existing context files (project files take precedence if path matches)
-                        context_files_content.update(all_project_files)
+                    logger.info("📋 Using %d files from scenario['context_files'] for retrieval", len(context_files_content))
                 elif isinstance(context_obj, list) and project_dir:
+                    # Context files are provided as list of paths - load only these files
                     context_files_content = load_context_files_from_scenario(
                         scenario,
                         project_dir=project_dir,
-                        include_all_project_files=should_load_all_files,
+                        include_all_project_files=False,  # Use only files from scenario['context_files']
                     )
-                    # If no files were loaded, try loading all project files as fallback
-                    if not context_files_content and project_dir.exists():
-                        logger.warning(
-                            "⚠️ No files found from context_files list, falling back to loading all project files for retrieval"
-                        )
-                        context_files_content = load_context_files_from_scenario(
-                            scenario,
-                            project_dir=project_dir,
-                            include_all_project_files=True,
-                        )
-                elif (context_obj is None or (isinstance(context_obj, list) and not project_dir)) and project_dir and project_dir.exists():
-                    # No context_files or no project_dir - try to load all project files
-                    logger.info("📚 No context_files specified, loading all project files for retrieval")
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
+                    logger.info("📋 Loaded %d files from scenario['context_files'] list for retrieval", len(context_files_content))
                 else:
+                    # No context_files available - cannot perform retrieval
+                    logger.warning(
+                        "⚠️ No context_files available for retrieval in scenario %s (context_obj type: %s, project_dir: %s)",
+                        scenario.get('id', 'unknown'),
+                        type(context_obj).__name__ if context_obj else 'None',
+                        project_dir,
+                    )
                     context_files_content = {}
 
                 # Adjust retrieval parameters based on task category
                 task_category = scenario.get('task_category', '').lower()
                 
-                # For architectural_understanding, we need broader context
-                # Architectural tasks benefit from seeing complete files rather than chunks
-                # to understand relationships and patterns
-                if task_category == 'architectural_understanding':
-                    effective_top_percent = min(0.40, retrieval_config.top_percent * 2)  # Double file coverage
-                    effective_chunks_per_file = 0  # Use full files instead of chunks for architectural understanding
+                # For architectural_understanding and cross_file_refactoring, we need broader context
+                if task_category in ['architectural_understanding', 'cross_file_refactoring']:
+                    effective_top_percent = min(0.70, retrieval_config.top_percent * 3.18)  # Increased from 0.60 to 0.70
+                    effective_chunks_per_file = 0  # Use full files instead of chunks
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
-                    effective_max_context = min(150000, retrieval_config.max_context_tokens * 1.5)  # More context
+                    effective_max_context = min(220000, retrieval_config.max_context_tokens * 2.2)  # Increased from 200000 to 220000
                     use_smart_chunking = False  # Disable chunking for architectural tasks - use full files
                     logger.info(
-                        "🏗️ Architectural understanding task: using full files strategy "
+                        "🏗️ Architectural/Refactoring task: using full files strategy "
                         "(top_percent=%.2f, smart_chunking=%s, max_context=%d)",
                         effective_top_percent,
                         use_smart_chunking,
                         effective_max_context,
                     )
+                elif task_category in ['code_comprehension', 'bug_investigation']:
+                    effective_top_percent = retrieval_config.top_percent * 1.40  # Increased from 1.30 to 1.40
+                    effective_chunks_per_file = min(16, getattr(retrieval_config, 'chunks_per_file', 8) + 8)  # Increased from +6 to +8
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = min(140000, retrieval_config.max_context_tokens * 1.4)  # Increased from 130000 to 140000
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                    logger.info(
+                        "🔍 Comprehension/Bug investigation task: using enhanced chunking "
+                        "(top_percent=%.2f, chunks_per_file=%d, max_context=%d)",
+                        effective_top_percent,
+                        effective_chunks_per_file,
+                        effective_max_context,
+                    )
+                elif task_category == 'integration_testing':
+                    effective_top_percent = retrieval_config.top_percent * 1.35  # Increased from 1.25 to 1.35
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                elif task_category == 'multi_session_development':
+                    effective_top_percent = retrieval_config.top_percent * 1.30  # Increased from 1.20 to 1.30
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                elif task_category == 'security_analysis':
+                    effective_top_percent = retrieval_config.top_percent * 1.30  # Increased from 1.20 to 1.30
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
+                elif task_category == 'feature_implementation':
+                    effective_top_percent = retrieval_config.top_percent * 1.25  # Increased from 1.15 to 1.25
+                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
+                    effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
+                    effective_max_context = retrieval_config.max_context_tokens
+                    use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 else:
                     effective_top_percent = retrieval_config.top_percent
-                    effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 5)
+                    # For comprehension tasks, increase chunks_per_file
+                    if task_category == 'code_comprehension':
+                        effective_chunks_per_file = min(14, getattr(retrieval_config, 'chunks_per_file', 8) + 6)  # Increased from +4 to +6
+                    else:
+                        effective_chunks_per_file = getattr(retrieval_config, 'chunks_per_file', 8)
                     effective_chunk_size = getattr(retrieval_config, 'retrieval_chunk_size', 2000)
                     effective_max_context = retrieval_config.max_context_tokens
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
@@ -2373,6 +2393,7 @@ class LoCoBenchEvaluator:
                     use_multi_query=getattr(retrieval_config, 'use_multi_query', True),
                     use_hybrid_search=getattr(retrieval_config, 'use_hybrid_search', True),
                     hybrid_alpha=getattr(retrieval_config, 'hybrid_alpha', 0.7),
+                    task_category=task_category,  # Pass task_category to retrieval
                 )
 
                 if retrieved_context:
@@ -2396,9 +2417,10 @@ class LoCoBenchEvaluator:
                 retrieved_context = ""
 
         # Build context section
-        # If retrieval is disabled or not applicable, load full context files
+        # If retrieval is disabled or not applicable, load context files from scenario
         if not retrieved_context:
             # Load context files content when retrieval is not used
+            # Use only files from scenario['context_files'] - no loading of all project files
             context_obj = scenario.get('context_files')
             context_files_content = {}
             
@@ -2411,53 +2433,32 @@ class LoCoBenchEvaluator:
             )
             
             if isinstance(context_obj, dict):
-                # Context files are already provided as dict with content
+                # Context files already provided as dict with content - use only these files
                 context_files_content = {
                     path: content for path, content in context_obj.items() if isinstance(content, str)
                 }
                 logger.debug("📋 Loaded %d files from dict context_files", len(context_files_content))
-                # For hard/expert: if we have project_dir, also load all project files
-                if should_load_all_files and project_dir and project_dir.exists():
-                    logger.info("📚 Loading additional project files for hard/expert scenario (non-retrieval mode)")
-                    all_project_files = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
-                    # Merge with existing context files (project files take precedence if path matches)
-                    context_files_content.update(all_project_files)
-                    logger.debug("📚 Added %d additional project files", len(all_project_files))
             elif isinstance(context_obj, list) and project_dir:
-                # Context files are provided as list of paths - load them
+                # Context files are provided as list of paths - load only these files
                 logger.debug("📋 Attempting to load %d files from list", len(context_obj))
                 context_files_content = load_context_files_from_scenario(
                     scenario,
                     project_dir=project_dir,
-                    include_all_project_files=should_load_all_files,
+                    include_all_project_files=False,  # Use only files from scenario['context_files']
                 )
-                # If no files were loaded and we have project_dir, try loading all project files as fallback
-                if not context_files_content and project_dir.exists() and not should_load_all_files:
+                if not context_files_content:
                     logger.warning(
-                        "⚠️ No files found from context_files list, falling back to loading all project files for scenario %s",
+                        "⚠️ No files found from context_files list for scenario %s",
                         scenario.get('id', 'unknown'),
                     )
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
-            elif context_obj is None or (isinstance(context_obj, list) and not project_dir):
-                # No context_files or no project_dir - try to load all project files if project_dir exists
-                if project_dir and project_dir.exists():
-                    logger.info(
-                        "📚 No context_files specified, loading all project files for scenario %s",
-                        scenario.get('id', 'unknown'),
-                    )
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=True,
-                    )
+            else:
+                # No context_files available
+                logger.warning(
+                    "⚠️ No context_files available for scenario %s (context_obj type: %s, project_dir: %s)",
+                    scenario.get('id', 'unknown'),
+                    type(context_obj).__name__ if context_obj else 'None',
+                    project_dir,
+                )
             
             # Format context files content
             if context_files_content:

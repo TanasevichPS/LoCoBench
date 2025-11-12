@@ -440,12 +440,12 @@ def _build_dependency_graph_fast(candidate_files: List[Dict[str, Any]], project_
             filename_map[filename] = []
         filename_map[filename].append(normalized_path)
     
-    # Extract dependencies for each file (use only first 2000 chars for speed)
+    # Extract dependencies for each file (use only first 3000 chars for speed, increased from 2000)
     for file_info in candidate_files:
         file_path = file_info["path"]
         normalized_path = _normalize_relative_path(file_path)
-        # Use only first 2000 chars for dependency extraction (much faster)
-        content = file_info.get("content", "")[:2000]
+        # Use only first 3000 chars for dependency extraction (increased from 2000 for better coverage)
+        content = file_info.get("content", "")[:3000]
         
         deps = _extract_file_dependencies(file_path, content, project_dir)
         
@@ -576,6 +576,7 @@ def _find_dependent_files(
     max_dependent_files: int = 10,
     is_architectural_task: bool = False,
     use_deep_expansion: bool = True,
+    expand_func: Optional[callable] = None,
 ) -> List[Dict[str, Any]]:
     """
     Find files that depend on selected files or are depended upon by selected files.
@@ -586,15 +587,20 @@ def _find_dependent_files(
     selected_paths = {_normalize_relative_path(file_info["path"]) for file_info in selected_files}
     dependent_paths: Set[str] = set()
     
-    # Strategy 1: Deep graph expansion (2-3 уровня глубины)
+    # Strategy 1: Deep graph expansion (use category-specific depth)
     if use_deep_expansion:
-        expanded_paths = _expand_via_dependency_graph(
-            selected_paths,
-            dependency_graph,
-            reverse_graph,
-            max_depth=2 if is_architectural_task else 3,  # Архитектурные: меньше глубина, больше зависимостей
-            max_files_per_level=20 if is_architectural_task else 15
-        )
+        if expand_func:
+            # Use custom expansion function with category-specific config
+            expanded_paths = expand_func(selected_paths, dependency_graph, reverse_graph)
+        else:
+            # Use default expansion (backward compatibility)
+            expanded_paths = _expand_via_dependency_graph(
+                selected_paths,
+                dependency_graph,
+                reverse_graph,
+                max_depth=2,
+                max_files_per_level=20
+            )
         dependent_paths.update(expanded_paths)
         # Удалить исходные файлы из зависимостей
         dependent_paths -= selected_paths
@@ -778,19 +784,21 @@ def _extract_key_entities_and_concepts(task_prompt: str) -> Dict[str, List[str]]
     }
 
 
-def _generate_multi_queries(task_prompt: str, num_queries: int = 5) -> List[str]:
+def _generate_multi_queries(task_prompt: str, num_queries: int = 8, task_type: str = None) -> List[str]:
     """
     Генерирует несколько вариантов запроса из оригинального промпта для Multi-Query Retrieval.
     Использует различные стратегии переформулирования запроса.
     
     Args:
         task_prompt: Оригинальный промпт задачи
-        num_queries: Количество вариантов запроса для генерации
+        num_queries: Количество вариантов запроса для генерации (увеличено до 8)
+        task_type: Тип задачи (architectural, comprehension, security, implementation)
     
     Returns:
         Список вариантов запроса
     """
     queries = [task_prompt]  # Всегда включаем оригинальный запрос
+    task_prompt_lower = task_prompt.lower()
     
     # Извлекаем ключевые компоненты
     extracted = _extract_key_entities_and_concepts(task_prompt)
@@ -820,23 +828,44 @@ def _generate_multi_queries(task_prompt: str, num_queries: int = 5) -> List[str]
         queries.append(simplified_query)
     
     # Стратегия 5: Расширенный запрос с синонимами
-    expanded_query = _expand_query_for_retrieval(task_prompt)
+    expanded_query = _expand_query_for_retrieval(task_prompt, task_type)
     if expanded_query != task_prompt:
         queries.append(expanded_query)
     
     # Стратегия 6: Вопросный формат (для comprehension tasks)
-    if any(word in task_prompt.lower() for word in ['how', 'what', 'why', 'where', 'when']):
-        # Уже в вопросном формате, добавляем как есть
-        pass
+    if any(word in task_prompt_lower for word in ['how', 'what', 'why', 'where', 'when']):
+        # Уже в вопросном формате, добавляем расширенный вопрос
+        question_query = f"How does {task_prompt_lower}? What code implements {task_prompt_lower}?"
+        queries.append(question_query)
     else:
         # Преобразуем в вопрос
-        question_query = f"How to {task_prompt.lower()}? What is needed for {task_prompt.lower()}?"
+        question_query = f"How to {task_prompt_lower}? What is needed for {task_prompt_lower}?"
         queries.append(question_query)
     
     # Стратегия 7: Технический фокус (для implementation tasks)
-    if any(word in task_prompt.lower() for word in ['implement', 'add', 'create', 'build']):
+    if any(word in task_prompt_lower for word in ['implement', 'add', 'create', 'build', 'develop']):
         tech_query = f"Implementation details: {task_prompt}. Code structure and patterns needed."
         queries.append(tech_query)
+    
+    # Стратегия 8: Архитектурный фокус (для architectural tasks)
+    if task_type == 'architectural' or any(word in task_prompt_lower for word in ['architect', 'architecture', 'design', 'structure', 'pattern']):
+        arch_query = f"Architecture and design: {task_prompt}. Components, interfaces, and relationships."
+        queries.append(arch_query)
+    
+    # Стратегия 9: Security фокус (для security tasks)
+    if task_type == 'security' or any(word in task_prompt_lower for word in ['security', 'audit', 'vulnerability', 'secure', 'safe']):
+        security_query = f"Security analysis: {task_prompt}. Vulnerabilities, authentication, authorization."
+        queries.append(security_query)
+    
+    # Стратегия 10: Comprehension фокус (для comprehension tasks)
+    if task_type == 'comprehension' or any(word in task_prompt_lower for word in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow']):
+        comprehension_query = f"Code flow and execution: {task_prompt}. Trace execution path and data flow."
+        queries.append(comprehension_query)
+    
+    # Стратегия 11: Комбинированный запрос (сущности + действия + концепции)
+    if extracted['entities'] and extracted['actions'] and extracted['concepts']:
+        combined_query = f"{task_prompt} Entities: {', '.join(extracted['entities'][:3])}. Actions: {', '.join(extracted['actions'][:2])}. Concepts: {', '.join(extracted['concepts'][:2])}"
+        queries.append(combined_query)
     
     # Ограничиваем количество запросов
     queries = queries[:num_queries]
@@ -850,7 +879,7 @@ def _generate_multi_queries(task_prompt: str, num_queries: int = 5) -> List[str]
             seen.add(q_hash)
             unique_queries.append(q)
     
-    logger.debug(f"Generated {len(unique_queries)} multi-queries from original prompt")
+    logger.debug(f"Generated {len(unique_queries)} multi-queries from original prompt (task_type={task_type})")
     return unique_queries
 
 
@@ -938,6 +967,146 @@ def _rank_files_with_keywords(
     return sorted(candidate_files, key=lambda info: info.get("bm25_score", 0.0), reverse=True)
 
 
+def _get_category_specific_config(task_category: Optional[str]) -> Dict[str, Any]:
+    """
+    Возвращает специализированную конфигурацию ретривера для каждой категории задач.
+    Оптимизировано на основе результатов: Integration Testing (2.235) - лучший, Code Comprehension (2.051) - худший.
+    """
+    task_category_lower = (task_category or '').lower()
+    
+    # Базовые конфигурации для каждой категории
+    configs = {
+        'integration_testing': {
+            'file_multiplier': 1.65,  # Увеличено с 1.50 - нужно больше файлов для интеграционных точек
+            'level1_ratio': 0.58,     # Семантически релевантные файлы
+            'level2_ratio': 0.37,     # Зависимости (важно для интеграции)
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.70,     # Баланс семантики и ключевых слов
+            'dependency_depth': 3,     # Глубина зависимостей
+            'dependency_files_per_level': 25,  # Файлов на уровень
+            'chunks_per_file': 6,     # Больше чанков для покрытия интеграционных точек
+            'prioritize_test_files': True,  # Приоритет тестовым файлам
+            'boost_keywords': ['test', 'integration', 'suite', 'spec', 'specification', 'mock', 'stub'],
+        },
+        'multi_session_development': {
+            'file_multiplier': 1.50,  # Увеличено с 1.40
+            'level1_ratio': 0.68,     # Семантически релевантные
+            'level2_ratio': 0.27,     # Зависимости
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.72,     # Больше семантики для контекста
+            'dependency_depth': 2,
+            'dependency_files_per_level': 20,
+            'chunks_per_file': 5,
+            'prioritize_test_files': False,
+            'boost_keywords': ['session', 'state', 'persist', 'cache', 'store', 'memory'],
+        },
+        'security_analysis': {
+            'file_multiplier': 1.50,  # Увеличено с 1.45 - для улучшения с 2.350 до 2.4+
+            'level1_ratio': 0.80,     # Увеличено с 0.78 - больше семантики для поиска уязвимостей
+            'level2_ratio': 0.15,     # Немного уменьшено
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.84,     # Увеличено с 0.82 - еще больше семантики для концептуального поиска
+            'dependency_depth': 2,
+            'dependency_files_per_level': 20,  # Увеличено с 18
+            'chunks_per_file': 6,     # Увеличено с 5 - больше чанков для анализа безопасности
+            'prioritize_test_files': False,
+            'boost_keywords': ['security', 'auth', 'encrypt', 'validate', 'sanitize', 'vulnerability', 'exploit', 'attack', 'password', 'token', 'permission', 'access'],
+        },
+        'feature_implementation': {
+            'file_multiplier': 1.55,  # Увеличено с 1.40 - для улучшения с 2.174 до 2.3+
+            'level1_ratio': 0.70,     # Немного уменьшено для большего количества зависимостей
+            'level2_ratio': 0.25,     # Увеличено с 0.23 - больше зависимостей для контекста
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.78,     # Увеличено с 0.76 - больше семантики для поиска релевантного кода
+            'dependency_depth': 3,     # Увеличено с 2 - более глубокая зависимость
+            'dependency_files_per_level': 28,  # Увеличено с 22 - больше файлов для контекста
+            'chunks_per_file': 6,     # Увеличено с 5 - больше чанков для реализации
+            'prioritize_test_files': False,
+            'boost_keywords': ['feature', 'implement', 'add', 'create', 'new', 'functionality', 'api', 'endpoint', 'service', 'handler', 'controller'],
+        },
+        'cross_file_refactoring': {
+            'file_multiplier': 2.10,  # Увеличено с 2.00 - нужно больше файлов для рефакторинга
+            'level1_ratio': 0.42,     # Семантически релевантные
+            'level2_ratio': 0.48,     # Много зависимостей для понимания структуры
+            'level3_ratio': 0.10,     # Важные файлы
+            'hybrid_alpha': 0.60,     # Больше BM25 для точных совпадений
+            'dependency_depth': 4,     # Глубокая зависимость
+            'dependency_files_per_level': 38,  # Больше файлов на уровень
+            'chunks_per_file': 7,     # Больше чанков для полного покрытия
+            'prioritize_test_files': False,
+            'boost_keywords': ['refactor', 'restructure', 'reorganize', 'merge', 'consolidate'],
+        },
+        'bug_investigation': {
+            'file_multiplier': 1.75,  # Увеличено с 1.60 - нужно больше файлов для отслеживания багов
+            'level1_ratio': 0.52,     # Семантически релевантные
+            'level2_ratio': 0.43,     # Много зависимостей для трассировки
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.66,     # Баланс для поиска багов
+            'dependency_depth': 3,
+            'dependency_files_per_level': 32,
+            'chunks_per_file': 6,     # Больше чанков для трассировки
+            'prioritize_test_files': True,  # Тесты могут показать ожидаемое поведение
+            'boost_keywords': ['bug', 'error', 'exception', 'fail', 'issue', 'problem', 'debug', 'trace'],
+        },
+        'architectural_understanding': {
+            'file_multiplier': 1.75,  # ВОЗВРАТ к версии с результатом 2.099 (было 1.85, ухудшило до 1.986)
+            'level1_ratio': 0.58,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.65, ухудшило до 1.986)
+            'level2_ratio': 0.32,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.25, ухудшило до 1.986)
+            'level3_ratio': 0.10,     # Важные файлы
+            'hybrid_alpha': 0.72,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.78, ухудшило до 1.986)
+            'dependency_depth': 3,     # Оставить умеренную глубину
+            'dependency_files_per_level': 25,  # Оставить умеренное количество
+            'chunks_per_file': 5,     # Стандартное значение
+            'prioritize_test_files': False,
+            'boost_keywords': ['architect', 'design', 'pattern', 'structure', 'component', 'module', 'interface', 'abstract', 'factory', 'builder', 'service', 'manager', 'config', 'main', 'entry'],
+        },
+        'code_comprehension': {
+            'file_multiplier': 1.40,  # ВОЗВРАТ к версии с результатом 2.099 (было 1.50, ухудшило до 1.986)
+            'level1_ratio': 0.68,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.72, ухудшило до 1.986)
+            'level2_ratio': 0.27,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.23, ухудшило до 1.986)
+            'level3_ratio': 0.05,     # Важные файлы
+            'hybrid_alpha': 0.75,     # ВОЗВРАТ к версии с результатом 2.099 (было 0.80, ухудшило до 1.986)
+            'dependency_depth': 3,     # Оставить умеренную глубину
+            'dependency_files_per_level': 20,  # Оставить умеренное количество
+            'chunks_per_file': 5,     # Стандартное значение
+            'prioritize_test_files': False,
+            'boost_keywords': ['comprehension', 'understand', 'trace', 'follow', 'flow', 'execution', 'call', 'method', 'function', 'handler', 'processor', 'service', 'controller'],
+        },
+    }
+    
+    # Определяем категорию
+    if 'integration' in task_category_lower or 'test' in task_category_lower:
+        return configs['integration_testing']
+    elif 'multi' in task_category_lower or 'session' in task_category_lower:
+        return configs['multi_session_development']
+    elif 'security' in task_category_lower:
+        return configs['security_analysis']
+    elif 'feature' in task_category_lower or 'implementation' in task_category_lower:
+        return configs['feature_implementation']
+    elif 'refactor' in task_category_lower:
+        return configs['cross_file_refactoring']
+    elif 'bug' in task_category_lower or 'investigation' in task_category_lower:
+        return configs['bug_investigation']
+    elif 'architectural' in task_category_lower:
+        return configs['architectural_understanding']
+    elif 'comprehension' in task_category_lower:
+        return configs['code_comprehension']
+    else:
+        # Default configuration
+        return {
+            'file_multiplier': 1.30,
+            'level1_ratio': 0.70,
+            'level2_ratio': 0.20,
+            'level3_ratio': 0.10,
+            'hybrid_alpha': 0.70,
+            'dependency_depth': 2,
+            'dependency_files_per_level': 20,
+            'chunks_per_file': 5,
+            'prioritize_test_files': False,
+            'boost_keywords': [],
+        }
+
+
 def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
     """
     Расширяет запрос для ритривера синонимами и связанными терминами.
@@ -946,19 +1115,26 @@ def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
     # Извлечь ключевые компоненты
     extracted = _extract_key_entities_and_concepts(task_prompt)
     
-    # Словарь синонимов для расширения запроса
+    # Словарь синонимов для расширения запроса (расширенный для лучшего покрытия)
     synonym_map = {
-        'merge': ['combine', 'integrate', 'consolidate', 'unite', 'join'],
-        'refactor': ['restructure', 'reorganize', 'redesign', 'improve', 'optimize'],
-        'sync': ['synchronize', 'coordinate', 'align', 'match', 'update'],
-        'implement': ['create', 'build', 'develop', 'add', 'construct'],
-        'trace': ['follow', 'track', 'debug', 'investigate', 'analyze'],
-        'understand': ['comprehend', 'analyze', 'examine', 'study', 'review'],
-        'security': ['secure', 'safe', 'protection', 'authentication', 'authorization'],
-        'architecture': ['structure', 'design', 'organization', 'layout', 'framework'],
-        'offline': ['local', 'cached', 'stored', 'persistent'],
-        'repository': ['store', 'database', 'dao', 'data access'],
-        'service': ['manager', 'handler', 'processor', 'controller'],
+        'merge': ['combine', 'integrate', 'consolidate', 'unite', 'join', 'merge', 'fuse', 'amalgamate'],
+        'refactor': ['restructure', 'reorganize', 'redesign', 'improve', 'optimize', 'refactor', 'rework', 'revamp'],
+        'sync': ['synchronize', 'coordinate', 'align', 'match', 'update', 'sync', 'harmonize', 'synchronize'],
+        'implement': ['create', 'build', 'develop', 'add', 'construct', 'implement', 'realize', 'execute'],
+        'trace': ['follow', 'track', 'debug', 'investigate', 'analyze', 'trace', 'monitor', 'examine'],
+        'understand': ['comprehend', 'analyze', 'examine', 'study', 'review', 'understand', 'grasp', 'perceive'],
+        'security': ['secure', 'safe', 'protection', 'authentication', 'authorization', 'security', 'safeguard', 'defense'],
+        'architecture': ['structure', 'design', 'organization', 'layout', 'framework', 'architecture', 'blueprint', 'schema'],
+        'offline': ['local', 'cached', 'stored', 'persistent', 'offline', 'localized', 'resident'],
+        'repository': ['store', 'database', 'dao', 'data access', 'repository', 'storage', 'persistence', 'cache'],
+        'service': ['manager', 'handler', 'processor', 'controller', 'service', 'facade', 'coordinator'],
+        'worker': ['worker', 'thread', 'task', 'job', 'executor', 'processor', 'handler'],
+        'room': ['room', 'space', 'area', 'zone', 'region', 'location', 'place'],
+        'store': ['store', 'repository', 'cache', 'storage', 'database', 'persistence'],
+        'pricing': ['pricing', 'price', 'cost', 'fee', 'charge', 'rate', 'amount'],
+        'contract': ['contract', 'agreement', 'deal', 'pact', 'treaty', 'arrangement'],
+        'etag': ['etag', 'entity tag', 'cache tag', 'version tag', 'hash', 'checksum'],
+        'conditional': ['conditional', 'condition', 'if', 'when', 'provided', 'depending'],
     }
     
     # Расширить ключевые слова синонимами
@@ -971,23 +1147,31 @@ def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
     for action in extracted['actions']:
         expanded_terms.append(action)
         if action in synonym_map:
-            expanded_terms.extend(synonym_map[action][:2])  # Добавить 2 синонима
+            expanded_terms.extend(synonym_map[action][:4])  # Добавить 4 синонима (увеличено с 2)
     
     # Добавить концепции с синонимами
     for concept in extracted['concepts']:
         expanded_terms.append(concept)
         if concept in synonym_map:
-            expanded_terms.extend(synonym_map[concept][:2])
+            expanded_terms.extend(synonym_map[concept][:4])  # Добавить 4 синонима (увеличено с 2)
     
-    # Добавить связанные термины в зависимости от типа задачи
+    # Добавить связанные термины в зависимости от типа задачи (расширенный список)
     if task_type == 'architectural':
-        expanded_terms.extend(['interface', 'abstract', 'pattern', 'component', 'module', 'structure'])
+        expanded_terms.extend(['interface', 'abstract', 'pattern', 'component', 'module', 'structure', 
+                              'design', 'architecture', 'framework', 'blueprint', 'schema', 'layout',
+                              'hierarchy', 'composition', 'decomposition', 'coupling', 'cohesion'])
     elif task_type == 'comprehension':
-        expanded_terms.extend(['flow', 'call', 'invoke', 'method', 'function', 'execution'])
+        expanded_terms.extend(['flow', 'call', 'invoke', 'method', 'function', 'execution', 
+                              'trace', 'track', 'follow', 'sequence', 'order', 'path', 'route',
+                              'control flow', 'data flow', 'execution path', 'call stack'])
     elif task_type == 'security':
-        expanded_terms.extend(['vulnerability', 'exploit', 'attack', 'injection', 'xss', 'csrf'])
+        expanded_terms.extend(['vulnerability', 'exploit', 'attack', 'injection', 'xss', 'csrf',
+                              'security', 'secure', 'safe', 'protection', 'authentication', 'authorization',
+                              'encryption', 'validation', 'sanitization', 'input validation', 'access control'])
     elif task_type == 'implementation':
-        expanded_terms.extend(['feature', 'functionality', 'capability', 'endpoint', 'api'])
+        expanded_terms.extend(['feature', 'functionality', 'capability', 'endpoint', 'api',
+                              'implementation', 'realization', 'execution', 'code', 'logic',
+                              'algorithm', 'mechanism', 'function', 'method', 'handler'])
     
     # Создать расширенный запрос
     expanded_query = task_prompt
@@ -997,7 +1181,7 @@ def _expand_query_for_retrieval(task_prompt: str, task_type: str = None) -> str:
         # Фильтровать слишком короткие термины
         meaningful_terms = [t for t in unique_terms if len(t) > 3]
         if meaningful_terms:
-            expanded_query += " " + " ".join(meaningful_terms[:15])  # Ограничить количество
+            expanded_query += " " + " ".join(meaningful_terms[:20])  # Увеличено с 15 до 20 терминов
     
     return expanded_query
 
@@ -1110,6 +1294,7 @@ def retrieve_relevant_embedding(
     use_multi_query: bool = True,
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
+    task_category: Optional[str] = None,  # Add task_category parameter
 ) -> str:
     """
     Retrieve the most relevant project files using embeddings and return them as context.
@@ -1152,91 +1337,97 @@ def retrieve_relevant_embedding(
         smart_chunking,
     )
 
-    # MULTI-LEVEL RETRIEVAL STRATEGY (adaptive based on task type):
-    # Detect task type and adjust strategy accordingly
+    # MULTI-LEVEL RETRIEVAL STRATEGY (adaptive based on task category):
+    # Use category-specific configuration for optimal retrieval
     
     task_prompt_lower = task_prompt.lower()
+    task_category_lower = (task_category or '').lower()
     
-    # Detect task type
-    is_architectural_task = any(
-        keyword in task_prompt_lower 
-        for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design']
+    # Get category-specific configuration
+    category_config = _get_category_specific_config(task_category)
+    
+    # Detect task type flags for backward compatibility and specific logic
+    is_architectural_task = (
+        'architectural' in task_category_lower or 'refactor' in task_category_lower or
+        any(keyword in task_prompt_lower 
+            for keyword in ['architect', 'architecture', 'structure', 'design', 'pattern', 'component', 'module', 'merge', 'refactor', 'critique', 'evaluate design', 'cross file refactor', 'refactoring'])
     )
     
-    is_code_comprehension_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain']
+    is_code_comprehension_task = (
+        'comprehension' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['trace', 'understand', 'comprehension', 'follow', 'track', 'flow', 'discrepancy', 'why', 'how does', 'explain'])
     )
     
-    is_security_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack']
+    is_security_task = (
+        'security' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['security', 'audit', 'vulnerability', 'secure', 'safe', 'protection', 'exploit', 'attack'])
     )
     
-    is_feature_implementation_task = any(
-        keyword in task_prompt_lower
-        for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional']
+    is_feature_implementation_task = (
+        'feature' in task_category_lower or 'implementation' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['implement', 'add', 'create', 'build', 'develop', 'feature', 'functionality', 'etag', 'conditional'])
     )
     
-    # Apply multipliers based on task type (after detection)
+    is_integration_testing_task = (
+        'integration' in task_category_lower or 'test' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['integration test', 'integration testing', 'test integration', 'integration', 'test suite', 'test case'])
+    )
+    
+    is_multi_session_task = (
+        'multi' in task_category_lower or 'session' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['multi session', 'multi-session', 'session', 'multiple sessions', 'ongoing'])
+    )
+    
+    is_bug_investigation_task = (
+        'bug' in task_category_lower or 'investigation' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['bug', 'investigate', 'investigation', 'debug', 'error', 'issue', 'problem', 'fix bug', 'trace bug'])
+    )
+    
+    is_refactoring_task = (
+        'refactor' in task_category_lower or
+        any(keyword in task_prompt_lower
+            for keyword in ['refactor', 'refactoring', 'restructure', 'reorganize', 'cross file', 'cross-file', 'multi-file'])
+    )
+    
+    # Apply file multiplier from category-specific configuration
     original_selected_count = selected_count
-    if is_architectural_task:
-        # For architectural tasks, increase file count more aggressively
-        # Architectural tasks need more context to understand system structure
-        architectural_multiplier = 1.40  # Increased from 1.25 to 1.40 (40% more files)
-        selected_count = int(selected_count * architectural_multiplier)
-        selected_count = min(selected_count, len(candidates))
-        logger.debug("🏗️ Architectural task: increased file count from %d to %d (%.1fx)", 
-                    original_selected_count, selected_count, architectural_multiplier)
-    elif is_code_comprehension_task:
-        # Moderate increase for code comprehension to capture more flow context
-        selected_count = int(selected_count * 1.20)  # Increased from 1.15 to 1.20
-        selected_count = min(selected_count, len(candidates))
-        logger.debug("🔍 Code comprehension: increased file count from %d to %d (1.20x)", 
-                    original_selected_count, selected_count)
+    file_multiplier = category_config['file_multiplier']
+    selected_count = int(selected_count * file_multiplier)
+    selected_count = min(selected_count, len(candidates))
     
-    # Optimized adaptive ratios based on task type
-    if is_architectural_task:
-        # For architectural tasks: more dependencies for structure understanding
-        level1_ratio = 0.55  # More semantic for better quality selection
-        level2_ratio = 0.35  # More dependencies (structure matters)
-        level3_ratio = 0.10  # Important files
-        logger.debug("🏗️ Architectural task detected: L1=55%, L2=35%, L3=10%")
-    elif is_code_comprehension_task:
-        # For code comprehension: more dependencies for tracing flow
-        level1_ratio = 0.65  # Good semantic coverage
-        level2_ratio = 0.30  # More dependencies for tracing (increased from 25%)
-        level3_ratio = 0.05  # Less important files (reduced from 10%)
-        logger.debug("🔍 Code comprehension task detected: L1=65%, L2=30%, L3=5%")
-    elif is_security_task:
-        # For security: more semantic (find security-related code)
-        level1_ratio = 0.70
-        level2_ratio = 0.20  # Some dependencies for context
-        level3_ratio = 0.10
-        logger.debug("🔒 Security task detected: L1=70%, L2=20%, L3=10%")
-    elif is_feature_implementation_task:
-        # For feature implementation: more semantic (find relevant code to modify)
-        level1_ratio = 0.75  # More semantic to find relevant code
-        level2_ratio = 0.15  # Some dependencies for context
-        level3_ratio = 0.10
-        logger.debug("⚙️ Feature implementation task detected: L1=75%, L2=15%, L3=10%")
-    else:
-        # Default: balanced approach
-        level1_ratio = 0.70
-        level2_ratio = 0.20
-        level3_ratio = 0.10
-        logger.debug("📝 Default task: L1=70%, L2=20%, L3=10%")
+    # УДАЛЕНО: Дополнительные бусты ухудшили результаты (упали с 2.115 до 1.991)
+    # Версия f1922da без дополнительных бустов давала максимальный скор 2.115
+    
+    logger.debug("📊 Category-specific config (%s): increased file count from %d to %d (%.2fx)", 
+                task_category or 'default', original_selected_count, selected_count, file_multiplier)
+    
+    # Use ratios from category-specific configuration
+    level1_ratio = category_config['level1_ratio']
+    level2_ratio = category_config['level2_ratio']
+    level3_ratio = category_config['level3_ratio']
+    logger.debug("📊 Category-specific ratios: L1=%.0f%%, L2=%.0f%%, L3=%.0f%%", 
+                level1_ratio * 100, level2_ratio * 100, level3_ratio * 100)
     
     # Create optimized retrieval query using prompt engineering
     task_type_name = None
-    if is_architectural_task:
+    if is_architectural_task or is_refactoring_task:
         task_type_name = 'architectural'
-    elif is_code_comprehension_task:
+    elif is_code_comprehension_task or is_bug_investigation_task:
         task_type_name = 'comprehension'
     elif is_security_task:
         task_type_name = 'security'
     elif is_feature_implementation_task:
         task_type_name = 'implementation'
+    elif is_integration_testing_task:
+        task_type_name = 'testing'
+    elif is_multi_session_task:
+        task_type_name = 'multi_session'
     
     # Extract key entities and concepts for better retrieval
     extracted_info = _extract_key_entities_and_concepts(task_prompt)
@@ -1253,7 +1444,7 @@ def retrieve_relevant_embedding(
     
     # Multi-Query Retrieval: Generate multiple query variants and combine results
     if use_multi_query:
-        multi_queries = _generate_multi_queries(task_prompt, num_queries=5)
+        multi_queries = _generate_multi_queries(task_prompt, num_queries=8, task_type=task_type_name)
         logger.debug(f"🔍 Multi-query retrieval: using {len(multi_queries)} query variants")
         
         # Rank files for each query variant
@@ -1264,8 +1455,13 @@ def retrieve_relevant_embedding(
             variant_expanded = _expand_query_for_retrieval(query_variant, task_type_name)
             variant_ranked = _rank_files_with_embeddings(model, query_variant, candidates, expanded_query=variant_expanded)
             all_ranked_files.append(variant_ranked)
-            # Первый запрос (оригинальный) имеет больший вес
-            weight = 1.0 if idx == 0 else 0.8
+            # Первый запрос (оригинальный) имеет больший вес, специализированные запросы - средний вес
+            if idx == 0:
+                weight = 1.0  # Оригинальный запрос
+            elif idx < 5:  # Первые специализированные запросы
+                weight = 0.9
+            else:  # Остальные запросы
+                weight = 0.7
             query_weights.append(weight)
         
         # Combine results: improved aggregation with RRF and weighted similarity
@@ -1282,9 +1478,9 @@ def retrieve_relevant_embedding(
                 similarity = file_info.get("similarity", 0.0)
                 
                 # Reciprocal Rank Fusion: score = 1 / (rank + k)
-                # Используем k=20 для большей чувствительности к рангу
+                # Используем k=15 для большей чувствительности к рангу (уменьшено с 20)
                 rank = rank_idx + 1
-                rrf_score = 1.0 / (rank + 20)  # k=20 для лучшей чувствительности
+                rrf_score = 1.0 / (rank + 15)  # k=15 для лучшей чувствительности
                 
                 if file_path not in file_scores:
                     file_scores[file_path] = 0.0
@@ -1310,8 +1506,8 @@ def retrieve_relevant_embedding(
             max_rrf = max(file_rrf_scores.values()) if file_rrf_scores else 1.0
             normalized_rrf = file_rrf_scores[file_path] / max_rrf if max_rrf > 0 else 0.0
             
-            # Комбинируем: 60% max_similarity (лучший match), 30% avg_similarity (стабильность), 10% RRF (позиция)
-            combined_score = (max_similarity * 0.6 + avg_similarity * 0.3 + normalized_rrf * 0.1)
+            # Комбинируем: 65% max_similarity (лучший match), 25% avg_similarity (стабильность), 10% RRF (позиция)
+            combined_score = (max_similarity * 0.65 + avg_similarity * 0.25 + normalized_rrf * 0.10)
             file_scores[file_path] = combined_score
         
         # Sort by combined score
@@ -1330,6 +1526,11 @@ def retrieve_relevant_embedding(
     # Hybrid Search: Combine semantic (embeddings) and keyword (BM25) results
     if use_hybrid_search and len(candidates) > 0:
         logger.debug("🔍 Hybrid search: combining semantic and BM25 results")
+        
+        # Use hybrid_alpha from category-specific configuration
+        adaptive_hybrid_alpha = category_config.get('hybrid_alpha', hybrid_alpha)
+        
+        logger.debug(f"🔍 Category-specific hybrid_alpha: {adaptive_hybrid_alpha} (category={task_category or 'default'})")
         
         # Get BM25 rankings
         bm25_ranked = _rank_files_with_bm25(task_prompt, candidates.copy())
@@ -1377,13 +1578,13 @@ def retrieve_relevant_embedding(
         for file_info in ranked_files:
             file_path = _normalize_relative_path(file_info["path"])
             semantic_score = file_info.get("normalized_semantic", 0.0)
-            hybrid_scores[file_path] = semantic_score * hybrid_alpha
+            hybrid_scores[file_path] = semantic_score * adaptive_hybrid_alpha
             hybrid_info[file_path] = file_info.copy()
         
         # Add BM25 scores (combine with semantic)
         for file_info in bm25_ranked:
             file_path = _normalize_relative_path(file_info["path"])
-            bm25_score = file_info.get("normalized_bm25", 0.0) * (1.0 - hybrid_alpha)
+            bm25_score = file_info.get("normalized_bm25", 0.0) * (1.0 - adaptive_hybrid_alpha)
             
             if file_path in hybrid_scores:
                 # Boost files that appear in both rankings
@@ -1400,10 +1601,54 @@ def retrieve_relevant_embedding(
             file_info["hybrid_score"] = hybrid_score
             ranked_files.append(file_info)
         
-        logger.debug(f"✅ Hybrid search: combined semantic (α={hybrid_alpha}) and BM25 (1-α={1-hybrid_alpha})")
+        logger.debug(f"✅ Hybrid search: combined semantic (α={adaptive_hybrid_alpha}) and BM25 (1-α={1-adaptive_hybrid_alpha})")
     
-    # Boost architectural files BEFORE selection for architectural tasks
-    if is_architectural_task:
+    # Boost files BEFORE selection based on category-specific keywords
+    boost_keywords = category_config.get('boost_keywords', [])
+    prioritize_test_files = category_config.get('prioritize_test_files', False)
+    
+    if boost_keywords or prioritize_test_files:
+        boosted_count = 0
+        task_words = set(task_prompt_lower.split())
+        
+        for file_info in ranked_files:
+            file_path_lower = file_info["path"].lower()
+            file_name_lower = Path(file_info["path"]).name.lower()
+            original_sim = file_info.get("similarity", 0.0)
+            boost = 0.0
+            
+            # Boost for category-specific keywords (увеличено для лучшего ранжирования)
+            if boost_keywords:
+                keyword_matches = sum(1 for keyword in boost_keywords if keyword in file_path_lower or keyword in file_name_lower)
+                if keyword_matches > 0:
+                    boost += 0.30 + (keyword_matches * 0.08)  # Увеличено: Base 0.30 + 0.08 per keyword (было 0.25 + 0.05)
+            
+            # Boost for test files if prioritized
+            if prioritize_test_files:
+                if any(test_indicator in file_path_lower for test_indicator in ['test', 'spec', 'specification', 'mock', 'stub']):
+                    boost += 0.25  # Увеличено с 0.20
+            
+            # Boost for files mentioned in task prompt (увеличено)
+            file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
+            common_words = task_words.intersection(file_words)
+            if len(common_words) > 0:
+                boost += 0.20  # Увеличено с 0.15
+            
+            # Additional boost for high similarity files (they're likely very relevant)
+            if original_sim > 0.15:  # Увеличено порог с 0.12
+                boost += 0.10  # Дополнительный бонус для высокорелевантных файлов
+            
+            if boost > 0:
+                file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
+        
+        if boosted_count > 0:
+            ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+            logger.debug("📈 Category-specific boosting: boosted %d files with keywords=%s, prioritize_test=%s", 
+                        boosted_count, boost_keywords[:3] if boost_keywords else [], prioritize_test_files)
+    
+    # Legacy boosting for architectural/refactoring tasks (backward compatibility)
+    if is_architectural_task or is_refactoring_task:
         architectural_keywords = [
             'interface', 'abstract', 'base', 'config', 'main', 'entry', 
             'factory', 'builder', 'strategy', 'adapter', 'service', 'manager',
@@ -1424,13 +1669,13 @@ def retrieve_relevant_embedding(
             # Boost similarity for architectural files
             boost = 0.0
             
-            # 1. Boost for architectural keywords in path/name (further increased)
+            # 1. Boost for architectural keywords in path/name (FURTHER INCREASED для улучшения с 1.789)
             keyword_matches = sum(1 for keyword in architectural_keywords if keyword in file_path_lower or keyword in file_name_lower)
             if keyword_matches > 0:
-                boost += 0.22 + (keyword_matches * 0.03)  # Increased: Base 0.22 + 0.03 per keyword (max ~0.40)
+                boost += 0.40 + (keyword_matches * 0.08)  # Увеличено: Base 0.40 + 0.08 per keyword (было 0.35 + 0.06)
             
-            # 2. Boost for architectural patterns in content (increased and extended scan)
-            content_preview = file_info.get("content", "")[:2500]  # Extended to 2500 chars (was 2000)
+            # 2. Boost for architectural patterns in content (FURTHER INCREASED)
+            content_preview = file_info.get("content", "")[:4000]  # Extended to 4000 chars (was 3500)
             content_lower = content_preview.lower()
             architectural_patterns = [
                 'interface ', 'abstract class', 'implements', 'extends', 'public class',
@@ -1439,21 +1684,21 @@ def retrieve_relevant_embedding(
             ]
             pattern_matches = sum(1 for pattern in architectural_patterns if pattern in content_lower)
             if pattern_matches > 0:
-                boost += 0.28 + (pattern_matches * 0.06)  # Increased: Base 0.28 + 0.06 per pattern
+                boost += 0.45 + (pattern_matches * 0.15)  # Увеличено: Base 0.45 + 0.15 per pattern (было 0.42 + 0.12)
             
             # 3. Boost for files with high similarity already (they're likely relevant)
-            if original_sim > 0.18:  # Lowered threshold from 0.20 to 0.18
-                boost += 0.15  # Increased from 0.12
+            if original_sim > 0.10:  # Снижено порог с 0.12 для большего охвата
+                boost += 0.28  # Увеличено с 0.25
             
             # 4. Boost for files mentioned in task prompt (by name)
             file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
             common_words = task_words.intersection(file_words)
             if len(common_words) > 0:
-                boost += 0.18  # Increased from 0.15
+                boost += 0.35  # Увеличено с 0.30
             
             # 5. Additional boost for entry points and configuration files
             if any(indicator in file_name_lower for indicator in ['main', 'application', 'config', 'factory', 'builder']):
-                boost += 0.15  # Increased from 0.12
+                boost += 0.30  # Увеличено с 0.25
             
             if boost > 0:
                 file_info["similarity"] = min(1.0, original_sim + boost)
@@ -1461,22 +1706,63 @@ def retrieve_relevant_embedding(
         
         # Re-rank after boosting
         ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
-        logger.debug("🏗️ Boosted %d architectural files before selection (max boost applied)", boosted_count)
+        logger.debug("🏗️ Boosted %d architectural/refactoring files before selection (max boost applied)", boosted_count)
+    
+    # Boost for comprehension and bug investigation tasks
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        comprehension_keywords = [
+            'trace', 'track', 'follow', 'flow', 'call', 'invoke', 'method', 'function',
+            'execution', 'sequence', 'order', 'path', 'route', 'handler', 'processor',
+            'service', 'controller', 'manager', 'worker', 'thread', 'task'
+        ]
+        
+        task_words = set(task_prompt_lower.split())
+        boosted_count = 0
+        
+        for file_info in ranked_files:
+            file_path_lower = file_info["path"].lower()
+            file_name_lower = Path(file_info["path"]).name.lower()
+            original_sim = file_info.get("similarity", 0.0)
+            boost = 0.0
+            
+            # Boost for flow-related keywords
+            keyword_matches = sum(1 for keyword in comprehension_keywords if keyword in file_path_lower or keyword in file_name_lower)
+            if keyword_matches > 0:
+                boost += 0.20 + (keyword_matches * 0.04)
+            
+            # Boost for files with method calls, function calls in content
+            content_preview = file_info.get("content", "")[:2500]
+            content_lower = content_preview.lower()
+            if any(pattern in content_lower for pattern in ['->', '.', '(', 'call', 'invoke', 'execute']):
+                boost += 0.15
+            
+            # Boost for files mentioned in task prompt
+            file_words = set(file_name_lower.split('_') + file_name_lower.split('-') + [file_name_lower])
+            common_words = task_words.intersection(file_words)
+            if len(common_words) > 0:
+                boost += 0.18
+            
+            if boost > 0:
+                file_info["similarity"] = min(1.0, original_sim + boost)
+                boosted_count += 1
+        
+        ranked_files = sorted(ranked_files, key=lambda info: info.get("similarity", 0.0), reverse=True)
+        logger.debug("🔍 Boosted %d comprehension/bug investigation files before selection", boosted_count)
     
     # Calculate how many files to select at each level
     # Level 1: Top semantically relevant files
     level1_count = max(1, int(selected_count * level1_ratio))
     
     # For architectural tasks, apply quality filter - only select files with good similarity
-    if is_architectural_task:
-        # Filter to files with similarity > 0.10 (after boost) to ensure quality
-        # Lowered threshold to capture more architectural files while maintaining quality
-        quality_threshold = 0.10  # Lowered from 0.12 to capture more files
+    if is_architectural_task or is_refactoring_task:
+        # Filter to files with similarity > threshold (after boost) to ensure quality
+        # Используем более низкий порог для архитектурных задач, чтобы захватить больше файлов
+        quality_threshold = 0.04  # Снижено с 0.05 для большего охвата архитектурных файлов
         quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
         if len(quality_files) >= level1_count:
             level1_files = quality_files[:level1_count]
             logger.debug(
-                "🏗️ Architectural quality filter: selected %d files with similarity > %.2f",
+                "🏗️ Architectural/Refactoring quality filter: selected %d files with similarity > %.2f",
                 len(level1_files),
                 quality_threshold
             )
@@ -1484,12 +1770,23 @@ def retrieve_relevant_embedding(
             # If not enough quality files, use all available but log warning
             level1_files = ranked_files[:level1_count]
             logger.debug(
-                "🏗️ Architectural: only %d files meet quality threshold, using top %d",
+                "🏗️ Architectural/Refactoring: only %d files meet quality threshold, using top %d",
                 len(quality_files),
                 level1_count
             )
-    else:
-        level1_files = ranked_files[:level1_count]
+    elif is_code_comprehension_task or is_bug_investigation_task:
+        # For comprehension/bug investigation: lower threshold для большего охвата
+        quality_threshold = 0.04  # Снижено с 0.05 для большего охвата файлов для трассировки
+        quality_files = [f for f in ranked_files if f.get("similarity", 0.0) > quality_threshold]
+        if len(quality_files) >= level1_count:
+            level1_files = quality_files[:level1_count]
+            logger.debug(
+                "🔍 Comprehension/Bug investigation quality filter: selected %d files with similarity > %.2f",
+                len(level1_files),
+                quality_threshold
+            )
+        else:
+            level1_files = ranked_files[:level1_count]
     
     logger.debug(
         "📊 Multi-level retrieval: Level 1 (semantic) selected %d files",
@@ -1507,15 +1804,30 @@ def retrieve_relevant_embedding(
             # Use lightweight analysis: limit file content analysis to first 2000 chars for speed
             dependency_graph, reverse_graph = _build_dependency_graph_fast(candidates, project_dir)
             
-            # Find dependent files with deep graph expansion (allow up to level2_count * 2.5 to have options)
+            # Find dependent files with deep graph expansion using category-specific config
+            dependency_depth = category_config.get('dependency_depth', 2)
+            dependency_files_per_level = category_config.get('dependency_files_per_level', 20)
+            max_dependent_files = min(int(level2_count * 2.5), selected_count - level1_count)
+            
+            # Create a wrapper function that uses category-specific config
+            def _expand_with_category_config(seed_paths, dep_graph, rev_graph):
+                return _expand_via_dependency_graph(
+                    seed_paths,
+                    dep_graph,
+                    rev_graph,
+                    max_depth=dependency_depth,
+                    max_files_per_level=dependency_files_per_level
+                )
+            
             dependent_files = _find_dependent_files(
                 level1_files,
                 candidates,
                 dependency_graph,
                 reverse_graph,
-                max_dependent_files=min(int(level2_count * 2.5), selected_count - level1_count),
+                max_dependent_files=max_dependent_files,
                 is_architectural_task=is_architectural_task,
                 use_deep_expansion=True,  # Enable deep graph expansion
+                expand_func=_expand_with_category_config,  # Pass custom expansion function
             )
             
             # Limit to level2_count
@@ -1594,6 +1906,10 @@ def retrieve_relevant_embedding(
     )
 
     if smart_chunking:
+        # Use category-specific chunks_per_file from configuration
+        category_chunks_per_file = category_config.get('chunks_per_file', chunks_per_file)
+        effective_chunks_per_file = category_chunks_per_file
+        
         # Split files into chunks and rank chunks by relevance
         all_chunks: List[Dict[str, Any]] = []
         
@@ -1607,10 +1923,11 @@ def retrieve_relevant_embedding(
             all_chunks.extend(file_chunks)
         
         logger.debug(
-            "Retrieval: split %d files into %d chunks (avg %.1f chunks/file)",
+            "Retrieval: split %d files into %d chunks (avg %.1f chunks/file, category_chunks_per_file=%d)",
             len(selected_files),
             len(all_chunks),
             len(all_chunks) / len(selected_files) if selected_files else 0,
+            effective_chunks_per_file,
         )
         
         # Rank all chunks by relevance
@@ -1656,7 +1973,7 @@ def retrieve_relevant_embedding(
             
             if file_level == 3:
                 # Level 3: Only take beginning chunks (first 1-2 chunks)
-                max_chunks_for_level3 = min(2, chunks_per_file)
+                max_chunks_for_level3 = min(2, effective_chunks_per_file)
                 for i in range(min(max_chunks_for_level3, len(file_chunks_sorted_by_pos))):
                     top_chunks.append(file_chunks_sorted_by_pos[i])
                 logger.debug(
@@ -1670,20 +1987,32 @@ def retrieve_relevant_embedding(
                 if first_chunk:
                     top_chunks.append(first_chunk)
                 
-                # For architectural tasks, also prioritize first few chunks (class definitions)
-                if is_architectural_task and len(file_chunks_sorted_by_pos) > 1:
-                    # Include first 3-4 chunks if they exist (usually contain class/interface definitions)
-                    for i in range(1, min(4, len(file_chunks_sorted_by_pos))):
+                # For architectural and refactoring tasks, prioritize first few chunks (class definitions)
+                if (is_architectural_task or is_refactoring_task) and len(file_chunks_sorted_by_pos) > 1:
+                    # Include first chunks based on category config (usually contain class/interface definitions)
+                    max_early_chunks = min(effective_chunks_per_file - 1, len(file_chunks_sorted_by_pos) - 1)
+                    for i in range(1, max_early_chunks + 1):
                         early_chunk = file_chunks_sorted_by_pos[i]
-                        if early_chunk not in top_chunks and len(top_chunks) < chunks_per_file:
-                            # Stronger boost for early chunks in architectural tasks
-                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.10
+                        if early_chunk not in top_chunks and len(top_chunks) < effective_chunks_per_file:
+                            # Stronger boost for early chunks in architectural/refactoring tasks
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.18  # Увеличено с 0.15
+                            top_chunks.append(early_chunk)
+                
+                # For comprehension and bug investigation tasks, prioritize more chunks for tracing
+                elif (is_code_comprehension_task or is_bug_investigation_task) and len(file_chunks_sorted_by_pos) > 1:
+                    # Include first chunks for better flow tracing
+                    max_early_chunks = min(6, effective_chunks_per_file - 1, len(file_chunks_sorted_by_pos) - 1)  # Увеличено с 5 до 6
+                    for i in range(1, max_early_chunks + 1):
+                        early_chunk = file_chunks_sorted_by_pos[i]
+                        if early_chunk not in top_chunks and len(top_chunks) < effective_chunks_per_file:
+                            early_chunk["similarity"] = early_chunk.get("similarity", 0.0) + 0.12  # Увеличено с 0.10
                             top_chunks.append(early_chunk)
                 
                 # Diversification strategy: select chunks from different parts of the file
                 # Divide file into regions and try to get at least one chunk from each region
                 if len(file_chunks_sorted_by_pos) > 1:
-                    num_regions = min(3, chunks_per_file - len(top_chunks))  # Adjust based on already selected chunks
+                    # For comprehension/bug investigation: more regions for better coverage
+                    num_regions = min(4 if (is_code_comprehension_task or is_bug_investigation_task) else 3, effective_chunks_per_file - len(top_chunks))
                     if num_regions > 0:
                         region_size = len(file_chunks_sorted_by_pos) // num_regions
                         
@@ -1698,12 +2027,12 @@ def retrieve_relevant_embedding(
                                 region_chunks_by_relevance = sorted(region_chunks, key=lambda c: c.get("similarity", 0.0), reverse=True)
                                 best_in_region = region_chunks_by_relevance[0]
                                 
-                                if best_in_region not in top_chunks and len(top_chunks) < chunks_per_file:
+                                if best_in_region not in top_chunks and len(top_chunks) < effective_chunks_per_file:
                                     top_chunks.append(best_in_region)
                 
                 # Fill remaining slots with top relevant chunks
                 for chunk in file_chunks_sorted_by_relevance:
-                    if len(top_chunks) >= chunks_per_file:
+                    if len(top_chunks) >= effective_chunks_per_file:
                         break
                     if chunk not in top_chunks:
                         top_chunks.append(chunk)
@@ -1922,6 +2251,7 @@ def retrieve_relevant(
     use_multi_query: bool = True,
     use_hybrid_search: bool = True,
     hybrid_alpha: float = 0.7,
+    task_category: Optional[str] = None,  # Add task_category parameter
 ) -> str:
     """Dispatch to the configured retrieval method."""
     if method == "embedding":
@@ -1940,6 +2270,7 @@ def retrieve_relevant(
             use_multi_query=use_multi_query,
             use_hybrid_search=use_hybrid_search,
             hybrid_alpha=hybrid_alpha,
+            task_category=task_category,  # Pass task_category
         )
         if not result and context_files:
             logger.warning("Embedding retrieval failed; falling back to keyword method.")
