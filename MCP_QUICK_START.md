@@ -9,6 +9,44 @@
 
 ## Как использовать
 
+### С локальной моделью (Ollama - рекомендуется)
+
+```python
+from pathlib import Path
+from locobench.mcp_retrieval import retrieve_with_mcp
+
+result = retrieve_with_mcp(
+    context_files=context_files,
+    task_prompt="Найти уязвимости безопасности",
+    task_category="security_analysis",
+    project_dir=Path("."),
+    provider="ollama",  # Локальная модель
+    model="llama3.2",
+    base_url="http://localhost:11434",  # По умолчанию
+    use_llm=True,
+)
+```
+
+**Установка Ollama:**
+```bash
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama pull llama3.2
+```
+
+### С Hugging Face (полностью офлайн)
+
+```python
+result = retrieve_with_mcp(
+    context_files=context_files,
+    task_prompt="Найти уязвимости безопасности",
+    task_category="security_analysis",
+    project_dir=Path("."),
+    provider="huggingface",  # или "hf"
+    model="meta-llama/Llama-3.2-3B-Instruct",
+    use_llm=True,
+)
+```
+
 ### Простой пример (без LLM - эвристики)
 
 ```python
@@ -114,8 +152,19 @@ result = retrieve_relevant_embedding(
 4. LLM может запросить дополнительные файлы
 5. Формируется финальный контекст
 
+## Локальные модели
+
+Поддерживаются три варианта локальных моделей:
+
+1. **Ollama** (рекомендуется) - Простой, поддерживает tool calling
+2. **Hugging Face** - Полностью офлайн, требует больше памяти
+3. **LocalAI/LM Studio** - OpenAI-совместимый API локально
+
+Подробнее: `MCP_LOCAL_MODELS_GUIDE.md`
+
 ## Дополнительная информация
 
 - `MCP_INTEGRATION_GUIDE.md` - Подробное руководство
+- `MCP_LOCAL_MODELS_GUIDE.md` - Руководство по локальным моделям
 - `MCP_EXPLANATION_RU.md` - Объяснение концепций
 - `MCP_INTEGRATION_PLAN.md` - План интеграции

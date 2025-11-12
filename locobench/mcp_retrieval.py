@@ -865,6 +865,8 @@ def retrieve_with_mcp(
     provider: str = "openai",
     model: Optional[str] = None,
     use_llm: bool = True,
+    base_url: Optional[str] = None,  # For local providers (Ollama, LocalAI)
+    api_key: Optional[str] = None,  # For LocalAI
 ) -> str:
     """
     Synchronous wrapper for retrieve_with_mcp_async.
@@ -877,9 +879,13 @@ def retrieve_with_mcp(
         task_category: Category of the task
         project_dir: Project directory
         config: Configuration object (optional, for LLM clients)
-        provider: LLM provider ("openai" or "anthropic")
-        model: Model name (optional, uses default from config)
+        provider: LLM provider:
+            - Cloud: "openai", "anthropic"
+            - Local: "ollama", "huggingface" (or "hf"), "local_openai" (or "local")
+        model: Model name (optional, uses default from config or provider)
         use_llm: Whether to use LLM for tool calling (default: True)
+        base_url: Base URL for local providers (default: http://localhost:11434 for Ollama)
+        api_key: API key for LocalAI (optional)
     
     Returns:
         Formatted context string with selected files
@@ -906,6 +912,8 @@ def retrieve_with_mcp(
                             provider=provider,
                             model=model,
                             use_llm=use_llm,
+                            base_url=base_url,
+                            api_key=api_key,
                         )
                     )
                 finally:
@@ -925,6 +933,8 @@ def retrieve_with_mcp(
                     provider=provider,
                     model=model,
                     use_llm=use_llm,
+                    base_url=base_url,
+                    api_key=api_key,
                 )
             )
     except RuntimeError:
@@ -951,6 +961,8 @@ async def retrieve_with_mcp_async(
     provider: str = "openai",
     model: Optional[str] = None,
     use_llm: bool = True,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """
     Async main entry point for MCP-based retrieval.
@@ -981,17 +993,40 @@ async def retrieve_with_mcp_async(
     if use_llm:
         # Use LLM for intelligent tool calling
         try:
-            from .mcp_llm_integration import retrieve_with_mcp_llm
-            
-            return await retrieve_with_mcp_llm(
-                context_files=context_files,
-                task_prompt=task_prompt,
-                task_category=task_category,
-                project_dir=project_dir,
-                config=config,
-                provider=provider,
-                model=model,
-            )
+            # Check if provider is a local model provider
+            if provider in ("ollama", "huggingface", "local_openai", "hf", "local"):
+                from .mcp_local_llm import retrieve_with_local_llm
+                
+                # Normalize provider name
+                if provider in ("hf", "huggingface"):
+                    provider = "huggingface"
+                elif provider == "local":
+                    provider = "local_openai"
+                
+                return await retrieve_with_local_llm(
+                    context_files=context_files,
+                    task_prompt=task_prompt,
+                    task_category=task_category,
+                    project_dir=project_dir,
+                    provider=provider,
+                    model=model or "llama3.2",  # Default model for local providers
+                    base_url=base_url,
+                    api_key=api_key,
+                    config=config,
+                )
+            else:
+                # Use cloud LLM (OpenAI/Anthropic)
+                from .mcp_llm_integration import retrieve_with_mcp_llm
+                
+                return await retrieve_with_mcp_llm(
+                    context_files=context_files,
+                    task_prompt=task_prompt,
+                    task_category=task_category,
+                    project_dir=project_dir,
+                    config=config,
+                    provider=provider,
+                    model=model,
+                )
         except Exception as e:
             logger.warning(f"MCP LLM integration failed: {e}. Falling back to heuristic-based selection.")
             import traceback
