@@ -1350,6 +1350,8 @@ def retrieve_relevant_embedding(
                 base_url=mcp_base_url,
                 api_key=mcp_api_key,
                 use_llm=use_llm_for_mcp,  # Использовать LLM только если провайдер доступен
+                max_context_tokens=max_context_tokens,  # Передать ограничение размера
+                top_percent=top_percent,  # Передать процент файлов
             )
             
             if mcp_result:

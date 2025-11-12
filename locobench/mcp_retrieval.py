@@ -1122,6 +1122,8 @@ def retrieve_with_mcp(
                 use_llm=use_llm,
                 base_url=base_url,
                 api_key=api_key,
+                max_context_tokens=max_context_tokens,
+                top_percent=top_percent,
             )
 
 

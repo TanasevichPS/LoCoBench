@@ -21,6 +21,8 @@ def retrieve_with_mcp_heuristics(
     task_prompt: str,
     task_category: str,
     project_dir: Path,
+    max_context_tokens: Optional[int] = None,
+    top_percent: Optional[float] = None,
 ) -> str:
     """
     MCP-based retrieval с использованием эвристик (без LLM).
@@ -214,14 +216,58 @@ def retrieve_with_mcp_heuristics(
         reverse=True
     )
     
+    # Применить ограничения на количество файлов
+    max_files = None
+    if top_percent and context_files:
+        max_files = max(1, int(len(context_files) * top_percent))
+        logger.debug(f"📊 Limiting to top {max_files} files ({top_percent*100:.1f}% of {len(context_files)} files)")
+    
     for result in sorted_results:
         path = result.get("path", "")
         if path and path not in seen_paths:
             seen_paths.add(path)
             unique_results.append(result)
             server.selected_files.add(path)
+            
+            # Ограничить количество файлов если указано
+            if max_files and len(unique_results) >= max_files:
+                logger.debug(f"📊 Reached file limit: {max_files} files")
+                break
     
     logger.info(f"✅ Selected {len(unique_results)} unique files from {len(all_results)} total results")
+    
+    # Применить ограничение на размер контекста
+    # max_context_tokens уже интерпретируется как количество символов (см. _apply_length_budget в retrieval.py)
+    if max_context_tokens:
+        max_chars = max_context_tokens  # Используем напрямую как символы
+        total_chars = 0
+        filtered_results = []
+        
+        for result in unique_results:
+            content = result.get("content", "")
+            content_length = len(content)
+            
+            if total_chars + content_length <= max_chars:
+                filtered_results.append(result)
+                total_chars += content_length
+            else:
+                # Попробовать добавить частично, если файл не слишком большой
+                remaining = max_chars - total_chars
+                if remaining > 1000:  # Минимум 1000 символов для частичного файла
+                    # Обрезать файл до оставшегося лимита
+                    result_copy = result.copy()
+                    result_copy["content"] = content[:remaining] + "\n... [truncated]"
+                    filtered_results.append(result_copy)
+                    total_chars = max_chars
+                break
+        
+        if len(filtered_results) < len(unique_results):
+            logger.info(
+                f"📊 Trimmed from {len(unique_results)} to {len(filtered_results)} files "
+                f"({total_chars:,} chars, limit: {max_chars:,} chars)"
+            )
+            unique_results = filtered_results
+            server.selected_files = {r.get("path", "") for r in filtered_results}
     
     # Форматировать результат
     result = server.format_selected_context()
