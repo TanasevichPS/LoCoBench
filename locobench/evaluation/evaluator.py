@@ -144,6 +144,9 @@ class LoCoBenchEvaluator:
         self._start_time = None
         self._scenario_times = []
         
+        # Cache MCP filter instance for reuse
+        self._mcp_filter = None
+        
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_interrupt)
         signal.signal(signal.SIGTERM, self._handle_interrupt)
@@ -2199,42 +2202,40 @@ class LoCoBenchEvaluator:
         
         # Load context files using MCP tool
         context_files_content = {}
+        scenario_id = scenario.get('id', '')
+        context_files_list = scenario.get('context_files', [])
         
-        try:
-            logger.info(f"📄 Loading context files using MCP tool for scenario: {scenario.get('id', 'unknown')}")
-            
-            from ..mcp_scenario_filter import create_scenario_filter
-            mcp_filter = create_scenario_filter(
-                self.config,
-                base_url=self.config.mcp_filter.base_url,
-                api_key=self.config.mcp_filter.api_key
-            )
-            
-            # Read context files using MCP tool
-            scenario_id = scenario.get('id', '')
-            context_files_list = scenario.get('context_files', [])
-            
-            if context_files_list:
+        if context_files_list:
+            try:
+                # Initialize MCP filter if not already cached
+                if self._mcp_filter is None:
+                    from ..mcp_scenario_filter import create_scenario_filter
+                    self._mcp_filter = create_scenario_filter(
+                        self.config,
+                        base_url=self.config.mcp_filter.base_url,
+                        api_key=self.config.mcp_filter.api_key
+                    )
+                
                 # Read each context file using MCP tool's path resolution
                 for context_file in context_files_list:
                     try:
-                        file_path = mcp_filter._get_code_file_path(scenario_id, context_file)
+                        file_path = self._mcp_filter._get_code_file_path(scenario_id, context_file)
                         if file_path.exists():
                             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 context_files_content[context_file] = f.read()
                         else:
-                            logger.warning(f"Context file not found: {file_path}")
+                            logger.debug(f"Context file not found: {file_path} (scenario: {scenario_id})")
                     except Exception as e:
                         logger.warning(f"Failed to load context file {context_file} via MCP: {e}")
                 
                 if context_files_content:
-                    logger.info(f"✅ Loaded {len(context_files_content)} context files via MCP tool")
-                else:
-                    logger.warning(f"⚠️ Could not load any context files via MCP tool")
+                    logger.debug(f"✅ Loaded {len(context_files_content)}/{len(context_files_list)} context files via MCP tool for scenario {scenario_id}")
+                elif len(context_files_list) > 0:
+                    logger.warning(f"⚠️ Could not load any context files via MCP tool for scenario {scenario_id}")
                     
-        except Exception as e:
-            logger.error(f"❌ Error loading context files via MCP tool: {e}", exc_info=True)
-            # Fallback: continue without context files
+            except Exception as e:
+                logger.error(f"❌ Error loading context files via MCP tool for scenario {scenario_id}: {e}", exc_info=True)
+                # Fallback: continue without context files
         
         # Build context section
         if context_files_content:
