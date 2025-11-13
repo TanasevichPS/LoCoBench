@@ -89,23 +89,23 @@ class LoCoBenchScenarioFilter:
                 try:
                     # Initialize the LLM model
                     self.model = _ChatOpenAI(
-                    model=model_name,
-                    temperature=0.0,
-                    base_url=self.base_url,
-                    api_key=self.api_key,
-                    streaming=True,
-                    timeout=30.0
-                )
-                
-                # Create tools for the agent
-                self.tools = self._create_tools()
-                
-                # Bind tools to model
-                self.model_with_tools = self.model.bind_tools(self.tools)
-                
-                # Create agent prompt
-                self.prompt = _ChatPromptTemplate.from_messages([
-                    ("system", """You are an expert at analyzing and filtering code evaluation scenarios.
+                        model=model_name,
+                        temperature=0.0,
+                        base_url=self.base_url,
+                        api_key=self.api_key,
+                        streaming=True,
+                        timeout=30.0
+                    )
+                    
+                    # Create tools for the agent
+                    self.tools = self._create_tools()
+                    
+                    # Bind tools to model
+                    self.model_with_tools = self.model.bind_tools(self.tools)
+                    
+                    # Create agent prompt
+                    self.prompt = _ChatPromptTemplate.from_messages([
+                        ("system", """You are an expert at analyzing and filtering code evaluation scenarios.
 Your task is to help select relevant scenarios from a collection based on:
 1. Difficulty level (easy, medium, hard, expert)
 2. Programming language support
@@ -135,22 +135,26 @@ Code files are located at: {generated_dir}/{project_dir}/{context_file}
 where context_file comes from the scenario's context_files array.
 
 Provide clear reasoning for your selections."""),
-                    ("user", "{input}"),
-                    _MessagesPlaceholder(variable_name="agent_scratchpad"),
-                ])
-                
-                # Create agent
-                agent = _create_openai_tools_agent(self.model_with_tools, self.tools, self.prompt)
-                
-                # Create agent executor
-                self.agent_executor = _AgentExecutor(
-                    agent=agent,
-                    tools=self.tools,
-                    verbose=True
-                )
-            except Exception as e:
-                logger.warning(f"Failed to initialize LangChain agent: {e}. LLM-based filtering will be disabled.")
-                self.agent_executor = None
+                        ("user", "{input}"),
+                        _MessagesPlaceholder(variable_name="agent_scratchpad"),
+                    ])
+                    
+                    # Create agent
+                    agent = _create_openai_tools_agent(self.model_with_tools, self.tools, self.prompt)
+                    
+                    # Create agent executor
+                    self.agent_executor = _AgentExecutor(
+                        agent=agent,
+                        tools=self.tools,
+                        verbose=True
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to initialize LangChain agent: {e}. LLM-based filtering will be disabled.")
+                    self.agent_executor = None
+            else:
+                logger.info("LangChain not available. LLM-based filtering will be disabled.")
+                self.model = None
+                self.tools = []
         else:
             self.model = None
             self.tools = []
