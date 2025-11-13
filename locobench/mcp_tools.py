@@ -6,8 +6,11 @@ the MCP scenario filter functionality.
 """
 
 from .mcp_scenario_filter import (
-    LoCoBenchScenarioFilter,
+    LoCoBenchMCPTool,
     create_scenario_filter
 )
 
-__all__ = ['LoCoBenchScenarioFilter', 'create_scenario_filter']
+# Backward compatibility alias
+LoCoBenchScenarioFilter = LoCoBenchMCPTool
+
+__all__ = ['LoCoBenchMCPTool', 'LoCoBenchScenarioFilter', 'create_scenario_filter']

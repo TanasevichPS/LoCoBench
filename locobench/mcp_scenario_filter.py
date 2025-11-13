@@ -1,9 +1,8 @@
 """
-MCP Tool for LoCoBench Scenario Filtering
+MCP Tool for LoCoBench - Selects Relevant Information from Code Files
 
-This module provides an MCP tool that uses ChatOpenAI with AgentExecutor
-to intelligently select relevant scenarios from files based on difficulty
-and supported languages.
+This module provides an MCP tool that uses LLM to intelligently select
+relevant code snippets and information from context files for scenarios.
 """
 
 import json
@@ -15,19 +14,39 @@ from .core.config import Config
 
 logger = logging.getLogger(__name__)
 
+# LangChain imports - optional, only needed for LLM-based content selection
+_LANGCHAIN_AVAILABLE = False
+_ChatOpenAI = None
 
-class LoCoBenchScenarioFilter:
-    """MCP tool for filtering LoCoBench scenarios using LLM-based selection"""
+def _try_import_langchain():
+    """Try to import LangChain components for LLM-based content selection"""
+    global _LANGCHAIN_AVAILABLE, _ChatOpenAI
+    
+    if _LANGCHAIN_AVAILABLE:
+        return True
+    
+    try:
+        from langchain_openai import ChatOpenAI as _ChatOpenAI_impl
+        _ChatOpenAI = _ChatOpenAI_impl
+        _LANGCHAIN_AVAILABLE = True
+        return True
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.debug(f"LangChain not available: {e}")
+        return False
+
+
+class LoCoBenchMCPTool:
+    """MCP tool for selecting relevant information from code files"""
     
     def __init__(self, config: Config, base_url: str = None, api_key: str = None, model: str = None):
         """
-        Initialize the scenario filter
+        Initialize the MCP tool
         
         Args:
             config: LoCoBench configuration object
             base_url: Base URL for the OpenAI-compatible API (defaults to config.mcp_filter.base_url)
             api_key: API key for authentication (defaults to config.mcp_filter.api_key)
-            model: Model name for the filter agent (defaults to config.mcp_filter.model)
+            model: Model name for content selection (defaults to config.mcp_filter.model)
         """
         self.config = config
         
@@ -36,14 +55,24 @@ class LoCoBenchScenarioFilter:
         self.api_key = api_key or config.mcp_filter.api_key
         model_name = model or config.mcp_filter.model
         
-        # Note: LangChain agent functionality removed - using basic filtering only
-        # The MCP tool now focuses on file path resolution and basic filtering
-        self.agent_executor = None
+        # Initialize LLM model if LangChain is available and enabled
         self.model = None
-        self.tools = []
-        
-        if config.mcp_filter.use_llm_selection:
-            logger.warning("LLM-based selection requested but LangChain is not available. Using basic filtering only.")
+        if config.mcp_filter.use_llm_selection and _try_import_langchain():
+            try:
+                self.model = _ChatOpenAI(
+                    model=model_name,
+                    temperature=0.0,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    streaming=False,
+                    timeout=30.0
+                )
+                logger.info("MCP tool initialized with LLM for content selection")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LLM model: {e}. Will use full file content.")
+                self.model = None
+        else:
+            logger.debug("MCP tool initialized without LLM - will return full file content")
     
     def _extract_project_dir_from_id(self, scenario_id: str) -> str:
         """Extract project directory name from scenario ID.
@@ -112,137 +141,104 @@ class LoCoBenchScenarioFilter:
         
         return full_path
     
-    def _create_tools(self) -> List:
-        """Create tools for the agent to use - NOT USED (LangChain removed)"""
-        # This method is kept for compatibility but returns empty list
-        # LangChain agent functionality has been removed - we only use basic filtering now
-        return []
     
-    def _get_scenario_language(self, scenario: Dict[str, Any]) -> str:
-        """Extract language from scenario ID"""
-        scenario_id = scenario.get('id', '')
-        if not scenario_id:
-            return 'unknown'
-
-        parts = scenario_id.split('_')
-        if not parts:
-            return 'unknown'
-        
-        language = parts[0].lower()
-
-        language_mapping = {
-            'c': 'c',
-            'cpp': 'cpp', 
-            'cs': 'csharp', 'csharp': 'csharp',
-            'go': 'go',
-            'java': 'java',
-            'js': 'javascript', 'javascript': 'javascript',
-            'php': 'php',
-            'py': 'python', 'python': 'python',
-            'rs': 'rust', 'rust': 'rust',
-            'ts': 'typescript', 'typescript': 'typescript'
-        }
-        
-        return language_mapping.get(language, language)
-    
-    def _filter_scenarios(self, scenarios: List[Dict[str, Any]], 
-                         task_categories: Optional[List[str]], 
-                         difficulty_levels: Optional[List[str]]) -> List[Dict[str, Any]]:
-        """Filter scenarios based on criteria"""
-        
-        filtered = scenarios
-        supported_languages = self.config.phase1.supported_languages
-        
-        # Filter by language if supported_languages is configured
-        if supported_languages:
-            filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
-            logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
-        
-        if task_categories:
-            filtered = [s for s in filtered if s.get('task_category') in task_categories]
-        
-        if difficulty_levels:
-            difficulty_levels_lower = [d.lower() for d in difficulty_levels]
-            filtered = [s for s in filtered if s.get('difficulty', '').lower() in difficulty_levels_lower]
-        
-        return filtered
-    
-    def filter_scenarios_from_files(
+    def select_relevant_content_from_files(
         self,
-        scenarios_dir: Path,
-        difficulty_levels: Optional[List[str]] = None,
-        task_categories: Optional[List[str]] = None,
-        use_llm_selection: bool = True
-    ) -> List[Dict[str, Any]]:
+        scenario: Dict[str, Any],
+        task_prompt: str,
+        max_content_length: Optional[int] = None
+    ) -> Dict[str, str]:
         """
-        Read scenarios from files and filter them using LLM-based selection
+        Select relevant content from scenario's context files using LLM
         
         Args:
-            scenarios_dir: Directory containing scenario JSON files
-            difficulty_levels: Optional list of difficulty levels to filter by
-            task_categories: Optional list of task categories to filter by
-            use_llm_selection: Whether to use LLM agent for intelligent selection
+            scenario: Scenario dictionary with 'id' and 'context_files'
+            task_prompt: The task prompt/description to guide content selection
+            max_content_length: Optional maximum length for selected content per file
             
         Returns:
-            List of filtered scenario dictionaries
+            Dictionary mapping file paths to selected relevant content
         """
-        # Load all scenarios from files
-        all_scenarios = []
-        scenario_files = list(scenarios_dir.glob("*.json"))
+        scenario_id = scenario.get('id', '')
+        context_files_list = scenario.get('context_files', [])
         
-        logger.info(f"📁 Found {len(scenario_files)} scenario files in {scenarios_dir}")
+        if not context_files_list:
+            logger.debug(f"No context files for scenario {scenario_id}")
+            return {}
         
-        for scenario_file in scenario_files:
+        selected_content = {}
+        
+        # Load all context files
+        file_contents = {}
+        for context_file in context_files_list:
             try:
-                with open(scenario_file, 'r') as f:
-                    scenario_data = json.load(f)
-                    # Each file contains a single scenario object
-                    all_scenarios.append(scenario_data)
+                file_path = self._get_code_file_path(scenario_id, context_file)
+                if file_path.exists():
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        file_contents[context_file] = f.read()
+                else:
+                    logger.debug(f"Context file not found: {file_path}")
             except Exception as e:
-                logger.error(f"Error loading scenario from {scenario_file}: {e}")
-                continue
+                logger.warning(f"Failed to load context file {context_file}: {e}")
         
-        if not all_scenarios:
-            logger.warning("No scenarios found in scenario files!")
-            return []
+        if not file_contents:
+            logger.warning(f"No context files loaded for scenario {scenario_id}")
+            return {}
         
-        logger.info(f"📊 Loaded {len(all_scenarios)} scenarios")
+        # If LLM is available, use it to select relevant content
+        if self.model and self.config.mcp_filter.use_llm_selection:
+            try:
+                # Use LLM to select relevant parts from each file
+                for file_path, full_content in file_contents.items():
+                    try:
+                        # Create prompt for content selection
+                        selection_prompt = f"""Given the following task and code file, select the most relevant parts.
+
+Task: {task_prompt}
+
+Code file ({file_path}):
+```{full_content[:50000]}```  # Limit to 50K chars for prompt
+
+Select the most relevant code snippets, functions, classes, or sections that are directly related to the task. 
+Return only the selected code, maintaining proper syntax and structure."""
+
+                        # Get LLM response
+                        response = self.model.invoke(selection_prompt)
+                        selected_code = response.content if hasattr(response, 'content') else str(response)
+                        
+                        # Apply length limit if specified
+                        if max_content_length and len(selected_code) > max_content_length:
+                            selected_code = selected_code[:max_content_length] + "\n... (truncated)"
+                        
+                        selected_content[file_path] = selected_code
+                        logger.debug(f"Selected {len(selected_code)} chars from {file_path} (original: {len(full_content)} chars)")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to select content from {file_path} using LLM: {e}. Using full file.")
+                        selected_content[file_path] = full_content
+                
+            except Exception as e:
+                logger.warning(f"LLM-based content selection failed: {e}. Using full file content.")
+                selected_content = file_contents
+        else:
+            # No LLM available - return full file content
+            selected_content = file_contents
+            logger.debug(f"Using full file content for {len(file_contents)} files (LLM not available)")
         
-        # Apply basic filtering first
-        filtered_scenarios = self._filter_scenarios(
-            all_scenarios,
-            task_categories=task_categories,
-            difficulty_levels=difficulty_levels
-        )
-        
-        logger.info(f"🔍 After basic filtering: {len(all_scenarios)} → {len(filtered_scenarios)} scenarios")
-        
-        # LLM-based selection removed - using basic filtering only
-        if use_llm_selection:
-            logger.info("LLM-based selection requested but LangChain agent functionality has been removed. Using basic filtering only.")
-        
-        # Log difficulty distribution after filtering
-        if filtered_scenarios:
-            difficulty_counts = {}
-            for s in filtered_scenarios:
-                diff = s.get('difficulty', 'unknown').lower()
-                difficulty_counts[diff] = difficulty_counts.get(diff, 0) + 1
-            logger.info(f"📊 Scenario difficulty distribution after filtering: {difficulty_counts}")
-        
-        return filtered_scenarios
+        return selected_content
 
 
-def create_scenario_filter(config: Config, base_url: str = None, api_key: str = None, model: str = None) -> LoCoBenchScenarioFilter:
+def create_scenario_filter(config: Config, base_url: str = None, api_key: str = None, model: str = None) -> LoCoBenchMCPTool:
     """
-    Factory function to create a scenario filter instance
+    Factory function to create an MCP tool instance
     
     Args:
         config: LoCoBench configuration object
         base_url: Base URL for the OpenAI-compatible API (defaults to config.mcp_filter.base_url)
         api_key: API key for authentication (defaults to config.mcp_filter.api_key)
-        model: Model name for the filter agent (defaults to config.mcp_filter.model)
+        model: Model name for content selection (defaults to config.mcp_filter.model)
         
     Returns:
-        LoCoBenchScenarioFilter instance
+        LoCoBenchMCPTool instance
     """
-    return LoCoBenchScenarioFilter(config, base_url=base_url, api_key=api_key, model=model)
+    return LoCoBenchMCPTool(config, base_url=base_url, api_key=api_key, model=model)

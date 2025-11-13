@@ -2193,21 +2193,20 @@ class LoCoBenchEvaluator:
                 session_content = task_prompt[session_key]
                 session_requirements.append(f"**{session_key.upper()}**: {session_content}")
             formatted_requirements = '\n\n'.join(session_requirements)
-            # For retrieval, use first session content as query
-            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
+            task_prompt_text = formatted_requirements
         else:
             # Regular scenario with string task_prompt
             formatted_requirements = str(task_prompt)
             task_prompt_text = str(task_prompt)
         
-        # Load context files using MCP tool
+        # Load and select relevant content from context files using MCP tool
         context_files_content = {}
         scenario_id = scenario.get('id', '')
         context_files_list = scenario.get('context_files', [])
         
         if context_files_list:
             try:
-                # Initialize MCP filter if not already cached
+                # Initialize MCP tool if not already cached
                 if self._mcp_filter is None:
                     from ..mcp_tools import create_scenario_filter
                     self._mcp_filter = create_scenario_filter(
@@ -2216,22 +2215,31 @@ class LoCoBenchEvaluator:
                         api_key=self.config.mcp_filter.api_key
                     )
                 
-                # Read each context file using MCP tool's path resolution
-                for context_file in context_files_list:
-                    try:
-                        file_path = self._mcp_filter._get_code_file_path(scenario_id, context_file)
-                        if file_path.exists():
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                context_files_content[context_file] = f.read()
-                        else:
-                            logger.debug(f"Context file not found: {file_path} (scenario: {scenario_id})")
-                    except Exception as e:
-                        logger.warning(f"Failed to load context file {context_file} via MCP: {e}")
+                # Use MCP tool to select relevant content from files
+                if self.config.mcp_filter.enabled:
+                    logger.debug(f"📄 Using MCP tool to select relevant content from files for scenario {scenario_id}")
+                    selected_content = self._mcp_filter.select_relevant_content_from_files(
+                        scenario=scenario,
+                        task_prompt=task_prompt_text,
+                        max_content_length=None  # No limit - let LLM decide what's relevant
+                    )
+                    context_files_content = selected_content
+                else:
+                    # MCP tool disabled - load full file content
+                    logger.debug(f"📄 Loading full context files for scenario {scenario_id}")
+                    for context_file in context_files_list:
+                        try:
+                            file_path = self._mcp_filter._get_code_file_path(scenario_id, context_file)
+                            if file_path.exists():
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    context_files_content[context_file] = f.read()
+                        except Exception as e:
+                            logger.warning(f"Failed to load context file {context_file}: {e}")
                 
                 if context_files_content:
-                    logger.debug(f"✅ Loaded {len(context_files_content)}/{len(context_files_list)} context files via MCP tool for scenario {scenario_id}")
+                    logger.debug(f"✅ Loaded {len(context_files_content)}/{len(context_files_list)} context files for scenario {scenario_id}")
                 elif len(context_files_list) > 0:
-                    logger.warning(f"⚠️ Could not load any context files via MCP tool for scenario {scenario_id}")
+                    logger.warning(f"⚠️ Could not load any context files for scenario {scenario_id}")
                     
             except Exception as e:
                 logger.error(f"❌ Error loading context files via MCP tool for scenario {scenario_id}: {e}", exc_info=True)
@@ -2466,18 +2474,52 @@ Generate your response now:"""
         
         return None
 
+    def _get_scenario_language(self, scenario: Dict[str, Any]) -> str:
+        """Extract language from scenario ID"""
+        scenario_id = scenario.get('id', '')
+        if not scenario_id:
+            return 'unknown'
+
+        parts = scenario_id.split('_')
+        if not parts:
+            return 'unknown'
+        
+        language = parts[0].lower()
+
+        language_mapping = {
+            'c': 'c',
+            'cpp': 'cpp', 
+            'cs': 'csharp', 'csharp': 'csharp',
+            'go': 'go',
+            'java': 'java',
+            'js': 'javascript', 'javascript': 'javascript',
+            'php': 'php',
+            'py': 'python', 'python': 'python',
+            'rs': 'rust', 'rust': 'rust',
+            'ts': 'typescript', 'typescript': 'typescript'
+        }
+        
+        return language_mapping.get(language, language)
+    
     def _filter_scenarios(self, scenarios: List[Dict[str, Any]], 
                          task_categories: Optional[List[str]], 
                          difficulty_levels: Optional[List[str]]) -> List[Dict[str, Any]]:
         """Filter scenarios based on criteria"""
         
         filtered = scenarios
+        supported_languages = self.config.phase1.supported_languages
+        
+        # Filter by language if supported_languages is configured
+        if supported_languages:
+            filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
+            logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
         
         if task_categories:
             filtered = [s for s in filtered if s.get('task_category') in task_categories]
         
         if difficulty_levels:
-            filtered = [s for s in filtered if s.get('difficulty') in difficulty_levels]
+            difficulty_levels_lower = [d.lower() for d in difficulty_levels]
+            filtered = [s for s in filtered if s.get('difficulty', '').lower() in difficulty_levels_lower]
         
         return filtered
 
@@ -2646,37 +2688,23 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
         if not all_scenarios:
             raise ValueError("No scenarios found in scenario files!")
         
-        # Apply MCP filter if enabled
-        if config.mcp_filter.enabled:
-            console.print("🔍 [bold cyan]MCP Scenario Filter enabled[/bold cyan]")
-            try:
-                from ..mcp_scenario_filter import create_scenario_filter
-                
-                # Create MCP filter
-                mcp_filter = create_scenario_filter(
-                    config,
-                    base_url=config.mcp_filter.base_url,
-                    api_key=config.mcp_filter.api_key
-                )
-                
-                # Convert difficulty to list for filtering
-                difficulty_levels_for_filter = [difficulty] if difficulty else None
-                
-                # Filter scenarios using MCP tool
-                console.print(f"📊 Filtering {len(all_scenarios)} scenarios using MCP tool...")
-                all_scenarios = mcp_filter.filter_scenarios_from_files(
-                    scenarios_dir=scenarios_dir,
-                    difficulty_levels=difficulty_levels_for_filter,
-                    task_categories=list(categories) if categories else None,
-                    use_llm_selection=config.mcp_filter.use_llm_selection
-                )
-                
-                console.print(f"✅ MCP filter selected {len(all_scenarios)} scenarios")
-                
-            except Exception as e:
-                logger.error(f"MCP filter failed: {e}")
-                console.print(f"⚠️  [yellow]MCP filter failed, using all scenarios: {e}[/yellow]")
-                # Continue with all scenarios if filter fails
+        # Apply filtering using evaluator's built-in filter
+        # Note: MCP tool is used for content selection, not scenario filtering
+        difficulty_levels_for_filter = [difficulty] if difficulty else None
+        
+        # Create temporary evaluator to use its filtering method
+        temp_evaluator = LoCoBenchEvaluator(config)
+        filtered_scenarios = temp_evaluator._filter_scenarios(
+            all_scenarios,
+            task_categories=list(categories) if categories else None,
+            difficulty_levels=difficulty_levels_for_filter
+        )
+        
+        # Log filtering results
+        if len(filtered_scenarios) != len(all_scenarios):
+            console.print(f"🔍 Filtered scenarios: {len(all_scenarios)} → {len(filtered_scenarios)}")
+        
+        all_scenarios = filtered_scenarios
         
         # Default models if none specified
         if not models:

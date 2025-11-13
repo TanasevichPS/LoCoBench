@@ -1,76 +1,77 @@
 """
-Example usage of the MCP Scenario Filter tool
+Example usage of the MCP Tool
 
-This demonstrates how to use the LoCoBenchScenarioFilter to filter scenarios
-using LLM-based selection with ChatOpenAI and AgentExecutor.
+This demonstrates how to use the LoCoBenchMCPTool to select relevant content
+from code files for scenarios using LLM-based content selection.
 """
 
 import asyncio
+import json
 from pathlib import Path
 from locobench.core.config import Config
 from locobench.mcp_scenario_filter import create_scenario_filter
 
 
 async def main():
-    """Example usage of the MCP scenario filter"""
+    """Example usage of the MCP tool for content selection"""
     
     # Load configuration
     config = Config.from_yaml("config.yaml")
     
-    # Create scenario filter with custom API settings
+    # Create MCP tool with custom API settings
     # Note: Update base_url and api_key according to your setup
-    scenario_filter = create_scenario_filter(
+    mcp_tool = create_scenario_filter(
         config,
         base_url="http://localhost:8000/v1",  # Update with your API endpoint
         api_key="111"  # Update with your API key
     )
     
-    # Define scenarios directory
+    # Load a sample scenario
     scenarios_dir = Path(config.data.output_dir) / "scenarios"
+    scenario_files = list(scenarios_dir.glob("*.json"))
     
-    # Filter scenarios by difficulty and language
-    filtered_scenarios = scenario_filter.filter_scenarios_from_files(
-        scenarios_dir=scenarios_dir,
-        difficulty_levels=["easy", "medium"],  # Filter by difficulty
-        task_categories=None,  # None means all categories
-        use_llm_selection=True  # Enable LLM-based intelligent selection
-    )
+    if not scenario_files:
+        print("No scenario files found!")
+        return
     
-    print(f"\n✅ Filtered {len(filtered_scenarios)} scenarios")
-    print("\nFiltered scenario IDs:")
-    for scenario in filtered_scenarios[:10]:  # Show first 10
-        scenario_id = scenario.get('id', 'unknown')
-        difficulty = scenario.get('difficulty', 'unknown')
-        language = scenario_filter._get_scenario_language(scenario)
-        project_dir = scenario_filter._extract_project_dir_from_id(scenario_id)
-        context_files_count = len(scenario.get('context_files', []))
+    # Load first scenario
+    with open(scenario_files[0], 'r') as f:
+        scenario = json.load(f)
+    
+    scenario_id = scenario.get('id', 'unknown')
+    task_prompt = scenario.get('task_prompt', '')
+    context_files = scenario.get('context_files', [])
+    
+    print(f"\n📋 Scenario: {scenario_id}")
+    print(f"   Task: {task_prompt[:100]}...")
+    print(f"   Context files: {len(context_files)}")
+    
+    # Example: Select relevant content from context files
+    if context_files and config.mcp_filter.enabled:
+        print(f"\n🔍 Using MCP tool to select relevant content from files...")
+        selected_content = mcp_tool.select_relevant_content_from_files(
+            scenario=scenario,
+            task_prompt=task_prompt,
+            max_content_length=None
+        )
         
-        print(f"  - {scenario_id}")
-        print(f"    Difficulty: {difficulty}, Language: {language}")
-        print(f"    Project Dir: {project_dir}, Context Files: {context_files_count}")
+        print(f"\n✅ Selected content from {len(selected_content)} files:")
+        for file_path, content in selected_content.items():
+            print(f"   - {file_path}: {len(content)} characters")
+            print(f"     Preview: {content[:100]}...")
+    else:
+        print("\n⚠️  MCP tool disabled or no context files. Enable it in config.yaml")
     
-    # Example: Read a code file from a scenario
-    if filtered_scenarios:
-        example_scenario = filtered_scenarios[0]
-        scenario_id = example_scenario.get('id')
-        context_files = example_scenario.get('context_files', [])
-        
-        if context_files:
-            print(f"\n📄 Example: Reading code file from scenario {scenario_id}")
-            print(f"   Context file: {context_files[0]}")
-            
-            # Get the full path
-            full_path = scenario_filter._get_code_file_path(scenario_id, context_files[0])
-            print(f"   Full path: {full_path}")
-            
-            # Check if file exists
-            if full_path.exists():
-                print(f"   ✅ File exists")
-                # You can read it using: read_code_file tool or directly
-            else:
-                print(f"   ❌ File not found")
+    # Example: Get file path resolution
+    if context_files:
+        print(f"\n📄 Example: Resolving file paths")
+        for context_file in context_files[:3]:  # Show first 3
+            full_path = mcp_tool._get_code_file_path(scenario_id, context_file)
+            print(f"   {context_file}")
+            print(f"   → {full_path}")
+            print(f"   Exists: {full_path.exists()}")
     
-    return filtered_scenarios
+    return scenario
 
 
 if __name__ == "__main__":
