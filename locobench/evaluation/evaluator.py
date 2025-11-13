@@ -26,7 +26,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
-from ..retrieval import retrieve_relevant, load_context_files_from_scenario
+# Retrieval removed - using MCP tool instead
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -2197,52 +2197,59 @@ class LoCoBenchEvaluator:
             formatted_requirements = str(task_prompt)
             task_prompt_text = str(task_prompt)
         
-        # Apply retrieval if enabled and scenario difficulty matches
-        retrieved_context = ""
-        difficulty = scenario.get('difficulty', '').lower()
-        retrieval_config = self.config.retrieval
+        # Load context files using MCP tool
+        context_files_content = {}
         
-        if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
-            try:
-                logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
-                
-                # Try to load context files content using the helper function
-                generated_dir = Path(self.config.data.generated_dir)
-                context_files_content = load_context_files_from_scenario(
-                    scenario, 
-                    project_dir=None,  # Will be inferred from scenario ID
-                    generated_dir=generated_dir
-                )
+        try:
+            logger.info(f"📄 Loading context files using MCP tool for scenario: {scenario.get('id', 'unknown')}")
+            
+            from ..mcp_scenario_filter import create_scenario_filter
+            mcp_filter = create_scenario_filter(
+                self.config,
+                base_url=self.config.mcp_filter.base_url,
+                api_key=self.config.mcp_filter.api_key
+            )
+            
+            # Read context files using MCP tool
+            scenario_id = scenario.get('id', '')
+            context_files_list = scenario.get('context_files', [])
+            
+            if context_files_list:
+                # Read each context file using MCP tool's path resolution
+                for context_file in context_files_list:
+                    try:
+                        file_path = mcp_filter._get_code_file_path(scenario_id, context_file)
+                        if file_path.exists():
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                context_files_content[context_file] = f.read()
+                        else:
+                            logger.warning(f"Context file not found: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to load context file {context_file} via MCP: {e}")
                 
                 if context_files_content:
-                    # Perform retrieval
-                    retrieved_context = retrieve_relevant(
-                        context_files_content,
-                        task_prompt_text,
-                        top_k=retrieval_config.top_k,
-                        method=retrieval_config.method,
-                        model_name=retrieval_config.model_name
-                    )
-                    
-                    if retrieved_context:
-                        logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
-                    else:
-                        logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
+                    logger.info(f"✅ Loaded {len(context_files_content)} context files via MCP tool")
                 else:
-                    logger.warning(f"⚠️ Could not load context files for retrieval in scenario {scenario.get('id', 'unknown')}")
+                    logger.warning(f"⚠️ Could not load any context files via MCP tool")
                     
-            except Exception as e:
-                logger.error(f"❌ Error during retrieval for scenario {scenario.get('id', 'unknown')}: {e}", exc_info=True)
-                # Fallback: continue without retrieval
+        except Exception as e:
+            logger.error(f"❌ Error loading context files via MCP tool: {e}", exc_info=True)
+            # Fallback: continue without context files
         
         # Build context section
-        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
-        if retrieved_context:
-            context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
-{retrieved_context}
+        if context_files_content:
+            # Format context files content for the prompt
+            context_parts = []
+            for file_path, content in context_files_content.items():
+                context_parts.append(f"**{file_path}**:\n```\n{content}\n```")
+            
+            context_section = f"""**CONTEXT FILES** (actual code content):
+{chr(10).join(context_parts)}
 
-**FULL CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}
+**CONTEXT FILE PATHS**: {', '.join(scenario.get('context_files', []))}
 """
+        else:
+            context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
         
         # Create enhanced solution prompt (now language-aware)
         solution_prompt = f"""You are an expert {config['engineer']}. Your task is to provide a complete, working solution.
