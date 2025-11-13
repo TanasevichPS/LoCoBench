@@ -26,7 +26,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
-from ..retrieval import retrieve_relevant, load_context_files_from_scenario
+# Retrieval removed - using MCP tool instead
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -143,6 +143,9 @@ class LoCoBenchEvaluator:
         self._interrupted = False
         self._start_time = None
         self._scenario_times = []
+        
+        # Cache MCP filter instance for reuse
+        self._mcp_filter = None
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_interrupt)
@@ -2190,90 +2193,72 @@ class LoCoBenchEvaluator:
                 session_content = task_prompt[session_key]
                 session_requirements.append(f"**{session_key.upper()}**: {session_content}")
             formatted_requirements = '\n\n'.join(session_requirements)
-            # For retrieval, use first session content as query
-            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
+            task_prompt_text = formatted_requirements
         else:
             # Regular scenario with string task_prompt
             formatted_requirements = str(task_prompt)
             task_prompt_text = str(task_prompt)
         
-        # Apply retrieval if enabled and scenario difficulty matches
-        retrieved_context = ""
-        difficulty = scenario.get('difficulty', '').lower()
-        retrieval_config = self.config.retrieval
+        # Load and select relevant content from context files using MCP tool
+        context_files_content = {}
+        scenario_id = scenario.get('id', '')
+        context_files_list = scenario.get('context_files', [])
         
-        if retrieval_config.enabled and difficulty in retrieval_config.difficulties:
+        if context_files_list:
             try:
-                logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
+                # Initialize MCP tool if not already cached
+                if self._mcp_filter is None:
+                    from ..mcp_tools import create_scenario_filter
+                    self._mcp_filter = create_scenario_filter(
+                        self.config,
+                        base_url=self.config.mcp_filter.base_url,
+                        api_key=self.config.mcp_filter.api_key
+                    )
                 
-                # Try to load context files content
-                context_files_content = {}
-                context_files_list = scenario.get('context_files', [])
-                
-                if isinstance(context_files_list, dict):
-                    # Already a dict with contents
-                    context_files_content = context_files_list
-                elif isinstance(context_files_list, list):
-                    # Try to load from generated_dir based on scenario metadata
-                    scenario_id = scenario.get('id', '')
-                    metadata = scenario.get('metadata', {})
-                    
-                    # Try to find project directory
-                    project_dir = None
-                    if 'project_path' in metadata:
-                        project_dir = Path(metadata['project_path'])
-                    elif scenario_id:
-                        # Try to infer from scenario_id - look for project in generated_dir
-                        generated_dir = Path(self.config.data.generated_dir)
-                        if generated_dir.exists():
-                            # Search for project directories
-                            for project_folder in generated_dir.iterdir():
-                                if project_folder.is_dir():
-                                    project_dir = project_folder
-                                    break
-                    
-                    # Load files if we found project directory
-                    if project_dir and project_dir.exists():
-                        for file_path in context_files_list:
-                            file_full_path = project_dir / file_path
-                            if file_full_path.exists():
-                                try:
-                                    with open(file_full_path, 'r', encoding='utf-8') as f:
-                                        context_files_content[file_path] = f.read()
-                                except Exception as e:
-                                    logger.warning(f"Failed to load context file {file_path}: {e}")
-                            else:
-                                logger.warning(f"Context file not found: {file_full_path}")
+                # Use MCP tool to select relevant content from files
+                if self.config.mcp_filter.enabled:
+                    logger.debug(f"📄 Using MCP tool to select relevant content from files for scenario {scenario_id}")
+                    selected_content = self._mcp_filter.select_relevant_content_from_files(
+                        scenario=scenario,
+                        task_prompt=task_prompt_text,
+                        max_content_length=None  # No limit - let LLM decide what's relevant
+                    )
+                    context_files_content = selected_content
+                else:
+                    # MCP tool disabled - load full file content
+                    logger.debug(f"📄 Loading full context files for scenario {scenario_id}")
+                    for context_file in context_files_list:
+                        try:
+                            file_path = self._mcp_filter._get_code_file_path(scenario_id, context_file)
+                            if file_path.exists():
+                                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    context_files_content[context_file] = f.read()
+                        except Exception as e:
+                            logger.warning(f"Failed to load context file {context_file}: {e}")
                 
                 if context_files_content:
-                    # Perform retrieval
-                    retrieved_context = retrieve_relevant(
-                        context_files_content,
-                        task_prompt_text,
-                        top_k=retrieval_config.top_k,
-                        method=retrieval_config.method,
-                        model_name=retrieval_config.model_name
-                    )
-                    
-                    if retrieved_context:
-                        logger.info(f"✅ Retrieved {retrieval_config.top_k} relevant fragments for scenario {scenario.get('id', 'unknown')}")
-                    else:
-                        logger.warning(f"⚠️ Retrieval returned empty result for scenario {scenario.get('id', 'unknown')}")
-                else:
-                    logger.warning(f"⚠️ Could not load context files for retrieval in scenario {scenario.get('id', 'unknown')}")
+                    logger.debug(f"✅ Loaded {len(context_files_content)}/{len(context_files_list)} context files for scenario {scenario_id}")
+                elif len(context_files_list) > 0:
+                    logger.warning(f"⚠️ Could not load any context files for scenario {scenario_id}")
                     
             except Exception as e:
-                logger.error(f"❌ Error during retrieval for scenario {scenario.get('id', 'unknown')}: {e}", exc_info=True)
-                # Fallback: continue without retrieval
+                logger.error(f"❌ Error loading context files via MCP tool for scenario {scenario_id}: {e}", exc_info=True)
+                # Fallback: continue without context files
         
         # Build context section
-        context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
-        if retrieved_context:
-            context_section = f"""**RETRIEVED CONTEXT** (use this for reasoning - most relevant code fragments):
-{retrieved_context}
+        if context_files_content:
+            # Format context files content for the prompt
+            context_parts = []
+            for file_path, content in context_files_content.items():
+                context_parts.append(f"**{file_path}**:\n```\n{content}\n```")
+            
+            context_section = f"""**CONTEXT FILES** (actual code content):
+{chr(10).join(context_parts)}
 
-**FULL CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}
+**CONTEXT FILE PATHS**: {', '.join(scenario.get('context_files', []))}
 """
+        else:
+            context_section = f"**CONTEXT FILES**: {', '.join(scenario.get('context_files', []))}"
         
         # Create enhanced solution prompt (now language-aware)
         solution_prompt = f"""You are an expert {config['engineer']}. Your task is to provide a complete, working solution.
@@ -2489,18 +2474,52 @@ Generate your response now:"""
         
         return None
 
+    def _get_scenario_language(self, scenario: Dict[str, Any]) -> str:
+        """Extract language from scenario ID"""
+        scenario_id = scenario.get('id', '')
+        if not scenario_id:
+            return 'unknown'
+
+        parts = scenario_id.split('_')
+        if not parts:
+            return 'unknown'
+        
+        language = parts[0].lower()
+
+        language_mapping = {
+            'c': 'c',
+            'cpp': 'cpp', 
+            'cs': 'csharp', 'csharp': 'csharp',
+            'go': 'go',
+            'java': 'java',
+            'js': 'javascript', 'javascript': 'javascript',
+            'php': 'php',
+            'py': 'python', 'python': 'python',
+            'rs': 'rust', 'rust': 'rust',
+            'ts': 'typescript', 'typescript': 'typescript'
+        }
+        
+        return language_mapping.get(language, language)
+    
     def _filter_scenarios(self, scenarios: List[Dict[str, Any]], 
                          task_categories: Optional[List[str]], 
                          difficulty_levels: Optional[List[str]]) -> List[Dict[str, Any]]:
         """Filter scenarios based on criteria"""
         
         filtered = scenarios
+        supported_languages = self.config.phase1.supported_languages
+        
+        # Filter by language if supported_languages is configured
+        if supported_languages:
+            filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
+            logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
         
         if task_categories:
             filtered = [s for s in filtered if s.get('task_category') in task_categories]
         
         if difficulty_levels:
-            filtered = [s for s in filtered if s.get('difficulty') in difficulty_levels]
+            difficulty_levels_lower = [d.lower() for d in difficulty_levels]
+            filtered = [s for s in filtered if s.get('difficulty', '').lower() in difficulty_levels_lower]
         
         return filtered
 
@@ -2668,6 +2687,24 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
         
         if not all_scenarios:
             raise ValueError("No scenarios found in scenario files!")
+        
+        # Apply filtering using evaluator's built-in filter
+        # Note: MCP tool is used for content selection, not scenario filtering
+        difficulty_levels_for_filter = [difficulty] if difficulty else None
+        
+        # Create temporary evaluator to use its filtering method
+        temp_evaluator = LoCoBenchEvaluator(config)
+        filtered_scenarios = temp_evaluator._filter_scenarios(
+            all_scenarios,
+            task_categories=list(categories) if categories else None,
+            difficulty_levels=difficulty_levels_for_filter
+        )
+        
+        # Log filtering results
+        if len(filtered_scenarios) != len(all_scenarios):
+            console.print(f"🔍 Filtered scenarios: {len(all_scenarios)} → {len(filtered_scenarios)}")
+        
+        all_scenarios = filtered_scenarios
         
         # Default models if none specified
         if not models:

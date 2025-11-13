@@ -45,4 +45,10 @@ black>=23.0.0
 flake8>=6.0.0
 
 # Retrieval-Augmented Generation (RAG)
-sentence-transformers>=2.2.0 
+sentence-transformers>=2.2.0
+
+# LangChain for MCP tool and agent execution
+# Note: LangChain 1.0+ compatibility
+langchain>=0.1.0,<0.3.0
+langchain-openai>=0.0.5
+langchain-core>=0.1.0,<0.3.0 

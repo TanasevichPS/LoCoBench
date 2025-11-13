@@ -213,3 +213,23 @@ retrieval:
   
   # Chunk size for code splitting (in characters)
   chunk_size: 512
+
+# =============================================================================
+# MCP FILTER CONFIGURATION - MCP Scenario Filter Tool
+# =============================================================================
+
+mcp_filter:
+  # Enable/disable MCP-based scenario filtering
+  enabled: false  # Set to true to enable MCP filtering
+  
+  # Base URL for OpenAI-compatible API (for the filter agent)
+  base_url: "http://localhost:8000/v1"
+  
+  # API key for authentication
+  api_key: "111"
+  
+  # Model name for the filter agent
+  model: "gpt-oss"
+  
+  # Use LLM-based intelligent selection (if False, uses basic filtering only)
+  use_llm_selection: true
