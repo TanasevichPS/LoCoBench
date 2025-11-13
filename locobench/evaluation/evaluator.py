@@ -2209,7 +2209,7 @@ class LoCoBenchEvaluator:
             try:
                 # Initialize MCP filter if not already cached
                 if self._mcp_filter is None:
-                    from ..mcp_scenario_filter import create_scenario_filter
+                    from ..mcp_tools import create_scenario_filter
                     self._mcp_filter = create_scenario_filter(
                         self.config,
                         base_url=self.config.mcp_filter.base_url,
