@@ -2206,44 +2206,13 @@ class LoCoBenchEvaluator:
             try:
                 logger.info(f"🔍 Applying retrieval for {difficulty} scenario: {scenario.get('id', 'unknown')}")
                 
-                # Try to load context files content
-                context_files_content = {}
-                context_files_list = scenario.get('context_files', [])
-                
-                if isinstance(context_files_list, dict):
-                    # Already a dict with contents
-                    context_files_content = context_files_list
-                elif isinstance(context_files_list, list):
-                    # Try to load from generated_dir based on scenario metadata
-                    scenario_id = scenario.get('id', '')
-                    metadata = scenario.get('metadata', {})
-                    
-                    # Try to find project directory
-                    project_dir = None
-                    if 'project_path' in metadata:
-                        project_dir = Path(metadata['project_path'])
-                    elif scenario_id:
-                        # Try to infer from scenario_id - look for project in generated_dir
-                        generated_dir = Path(self.config.data.generated_dir)
-                        if generated_dir.exists():
-                            # Search for project directories
-                            for project_folder in generated_dir.iterdir():
-                                if project_folder.is_dir():
-                                    project_dir = project_folder
-                                    break
-                    
-                    # Load files if we found project directory
-                    if project_dir and project_dir.exists():
-                        for file_path in context_files_list:
-                            file_full_path = project_dir / file_path
-                            if file_full_path.exists():
-                                try:
-                                    with open(file_full_path, 'r', encoding='utf-8') as f:
-                                        context_files_content[file_path] = f.read()
-                                except Exception as e:
-                                    logger.warning(f"Failed to load context file {file_path}: {e}")
-                            else:
-                                logger.warning(f"Context file not found: {file_full_path}")
+                # Try to load context files content using the helper function
+                generated_dir = Path(self.config.data.generated_dir)
+                context_files_content = load_context_files_from_scenario(
+                    scenario, 
+                    project_dir=None,  # Will be inferred from scenario ID
+                    generated_dir=generated_dir
+                )
                 
                 if context_files_content:
                     # Perform retrieval

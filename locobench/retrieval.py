@@ -256,7 +256,8 @@ def retrieve_relevant(
 
 def load_context_files_from_scenario(
     scenario: Dict,
-    project_dir: Optional[Path] = None
+    project_dir: Optional[Path] = None,
+    generated_dir: Optional[Path] = None
 ) -> Dict[str, str]:
     """
     Load context file contents from scenario.
@@ -267,7 +268,8 @@ def load_context_files_from_scenario(
     
     Args:
         scenario: Scenario dictionary
-        project_dir: Directory containing project files
+        project_dir: Directory containing project files (if None, will try to infer from scenario ID)
+        generated_dir: Base directory for generated projects (used if project_dir is None)
         
     Returns:
         Dictionary mapping file paths to code content
@@ -286,21 +288,50 @@ def load_context_files_from_scenario(
     if isinstance(context_files_list, list):
         context_files_dict = {}
         
-        # Try to find project directory
+        # Try to find project directory if not provided
         if project_dir is None:
-            # Try to infer from scenario metadata or config
             scenario_id = scenario.get('id', '')
-            # Project directory might be in metadata or we need to search
-            # For now, return empty dict if we can't find files
+            metadata = scenario.get('metadata', {})
+            
+            # Try metadata first
+            if 'project_path' in metadata:
+                project_dir = Path(metadata['project_path'])
+            elif scenario_id and generated_dir:
+                # Extract project directory name from scenario ID
+                # Scenario ID format: {lang}_{project_name}_{complexity}_{number}_{task_category}_{difficulty}_{instance}
+                # Project dir: {lang}_{project_name}_{complexity}_{number}
+                parts = scenario_id.split('_')
+                if len(parts) >= 4:
+                    # Find task category position
+                    task_categories = [
+                        'architectural_understanding', 'cross_file_refactoring', 'feature_implementation',
+                        'bug_investigation', 'multi_session_development', 'code_comprehension',
+                        'integration_testing', 'security_analysis'
+                    ]
+                    project_parts = []
+                    for i, part in enumerate(parts):
+                        if part in task_categories or (i < len(parts) - 1 and f"{part}_{parts[i+1]}" in task_categories):
+                            break
+                        project_parts.append(part)
+                    
+                    if project_parts:
+                        project_dir_name = '_'.join(project_parts)
+                        project_dir = generated_dir / project_dir_name
+        
+        if project_dir is None or not project_dir.exists():
+            scenario_id = scenario.get('id', 'unknown')
             logger.warning(f"Cannot load context files without project directory. Scenario: {scenario_id}")
             return {}
         
-        # Load files from project directory
+        # Normalize context file paths (handle // separators)
         for file_path in context_files_list:
-            file_full_path = project_dir / file_path
+            # Normalize path separators
+            normalized_path = file_path.replace('//', '/')
+            file_full_path = project_dir / normalized_path
+            
             if file_full_path.exists():
                 try:
-                    with open(file_full_path, 'r', encoding='utf-8') as f:
+                    with open(file_full_path, 'r', encoding='utf-8', errors='ignore') as f:
                         context_files_dict[file_path] = f.read()
                 except Exception as e:
                     logger.warning(f"Failed to load file {file_path}: {e}")
