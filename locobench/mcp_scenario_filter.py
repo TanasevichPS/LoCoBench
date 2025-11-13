@@ -7,6 +7,7 @@ relevant code snippets and information from context files for scenarios.
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -65,7 +66,7 @@ class LoCoBenchMCPTool:
                     base_url=self.base_url,
                     api_key=self.api_key,
                     streaming=False,
-                    timeout=30.0
+                    timeout=120.0  # Increased timeout for large files
                 )
                 logger.info("MCP tool initialized with LLM for content selection")
             except Exception as e:
@@ -73,6 +74,10 @@ class LoCoBenchMCPTool:
                 self.model = None
         else:
             logger.debug("MCP tool initialized without LLM - will return full file content")
+        
+        # Configuration for content selection
+        self.max_file_size_for_llm = 100000  # 100KB - files larger than this use full content
+        self.max_prompt_size = 30000  # Limit prompt size to avoid timeouts
     
     def _extract_project_dir_from_id(self, scenario_id: str) -> str:
         """Extract project directory name from scenario ID.
@@ -191,20 +196,71 @@ class LoCoBenchMCPTool:
                 # Use LLM to select relevant parts from each file
                 for file_path, full_content in file_contents.items():
                     try:
+                        # Skip LLM processing for very large files to avoid timeouts
+                        if len(full_content) > self.max_file_size_for_llm:
+                            logger.debug(f"File {file_path} too large ({len(full_content)} chars), using full content")
+                            selected_content[file_path] = full_content
+                            continue
+                        
+                        # Limit content size for prompt to avoid timeouts
+                        content_for_prompt = full_content
+                        if len(content_for_prompt) > self.max_prompt_size:
+                            # Try to keep beginning and end of file (often most relevant)
+                            half_size = self.max_prompt_size // 2
+                            content_for_prompt = (
+                                content_for_prompt[:half_size] + 
+                                f"\n\n... [middle {len(full_content) - self.max_prompt_size} characters omitted] ...\n\n" +
+                                content_for_prompt[-half_size:]
+                            )
+                            logger.debug(f"Truncated {file_path} from {len(full_content)} to {len(content_for_prompt)} chars for prompt")
+                        
                         # Create prompt for content selection
                         selection_prompt = f"""Given the following task and code file, select the most relevant parts.
 
 Task: {task_prompt}
 
 Code file ({file_path}):
-```{full_content[:50000]}```  # Limit to 50K chars for prompt
+```
+{content_for_prompt}
+```
 
 Select the most relevant code snippets, functions, classes, or sections that are directly related to the task. 
-Return only the selected code, maintaining proper syntax and structure."""
+Return only the selected code, maintaining proper syntax and structure.
+If the file is large, prioritize the parts that are most relevant to completing the task."""
 
-                        # Get LLM response
-                        response = self.model.invoke(selection_prompt)
-                        selected_code = response.content if hasattr(response, 'content') else str(response)
+                        # Get LLM response with retry logic
+                        max_retries = 2
+                        selected_code = None
+                        last_error = None
+                        
+                        for attempt in range(max_retries + 1):
+                            try:
+                                response = self.model.invoke(selection_prompt)
+                                selected_code = response.content if hasattr(response, 'content') else str(response)
+                                
+                                # Validate that we got meaningful content
+                                if selected_code and len(selected_code.strip()) > 50:
+                                    break
+                                else:
+                                    logger.warning(f"LLM returned empty/minimal content for {file_path}, attempt {attempt + 1}")
+                                    if attempt < max_retries:
+                                        continue
+                                    # Fallback to full content if all retries failed
+                                    selected_code = full_content
+                                    break
+                                    
+                            except Exception as e:
+                                last_error = e
+                                if attempt < max_retries:
+                                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s
+                                    logger.debug(f"Retry {attempt + 1}/{max_retries} for {file_path} after {wait_time}s: {e}")
+                                    time.sleep(wait_time)
+                                else:
+                                    # Final attempt failed
+                                    raise
+                        
+                        if selected_code is None:
+                            raise last_error or Exception("Failed to get response from LLM")
                         
                         # Apply length limit if specified
                         if max_content_length and len(selected_code) > max_content_length:
@@ -214,7 +270,12 @@ Return only the selected code, maintaining proper syntax and structure."""
                         logger.debug(f"Selected {len(selected_code)} chars from {file_path} (original: {len(full_content)} chars)")
                         
                     except Exception as e:
-                        logger.warning(f"Failed to select content from {file_path} using LLM: {e}. Using full file.")
+                        error_msg = str(e)
+                        # Check if it's a timeout error
+                        if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                            logger.warning(f"Timeout selecting content from {file_path} ({len(full_content)} chars). Using full file.")
+                        else:
+                            logger.warning(f"Failed to select content from {file_path} using LLM: {e}. Using full file.")
                         selected_content[file_path] = full_content
                 
             except Exception as e:
