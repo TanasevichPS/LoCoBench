@@ -22,12 +22,12 @@ retrieval:
 
 api:
   # API Keys (set via environment variables for security)
-  openai_api_key: "sk-bc454602c6df4e6a8e86b0fd2d978874"
-  openai_base_url: "http://lri-deepseek.rnd.huawei.com:8080/api/"
+  openai_api_key: "
+  openai_base_url: 
   custom_model_name: "DeepSeekR1-70B-LRI"
   openai_timeout: 600
-  custom_model_base_url: "http://lri-deepseek.rnd.huawei.com:8080/api/"
-  custom_model_api_key: "sk-bc454602c6df4e6a8e86b0fd2d978874"
+  custom_model_base_url:
+  custom_model_api_key:
   custom_model_temperature: 0.1
   custom_model_max_tokens: 1000000
   custom_model_timeout: 600
