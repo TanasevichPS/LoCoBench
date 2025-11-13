@@ -23,25 +23,29 @@ logger = logging.getLogger(__name__)
 class LoCoBenchScenarioFilter:
     """MCP tool for filtering LoCoBench scenarios using LLM-based selection"""
     
-    def __init__(self, config: Config, base_url: str = "http://localhost:8000/v1", api_key: str = "111"):
+    def __init__(self, config: Config, base_url: str = None, api_key: str = None, model: str = None):
         """
         Initialize the scenario filter
         
         Args:
             config: LoCoBench configuration object
-            base_url: Base URL for the OpenAI-compatible API
-            api_key: API key for authentication
+            base_url: Base URL for the OpenAI-compatible API (defaults to config.mcp_filter.base_url)
+            api_key: API key for authentication (defaults to config.mcp_filter.api_key)
+            model: Model name for the filter agent (defaults to config.mcp_filter.model)
         """
         self.config = config
-        self.base_url = base_url
-        self.api_key = api_key
+        
+        # Use config values as defaults
+        self.base_url = base_url or config.mcp_filter.base_url
+        self.api_key = api_key or config.mcp_filter.api_key
+        model_name = model or config.mcp_filter.model
         
         # Initialize the LLM model
         self.model = ChatOpenAI(
-            model="gpt-oss",
+            model=model_name,
             temperature=0.0,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=self.base_url,
+            api_key=self.api_key,
             streaming=True,
             timeout=30.0
         )
@@ -546,16 +550,17 @@ Start by reading a few scenario files to understand their structure, then apply 
         return filtered_scenarios
 
 
-def create_scenario_filter(config: Config, base_url: str = "http://localhost:8000/v1", api_key: str = "111") -> LoCoBenchScenarioFilter:
+def create_scenario_filter(config: Config, base_url: str = None, api_key: str = None, model: str = None) -> LoCoBenchScenarioFilter:
     """
     Factory function to create a scenario filter instance
     
     Args:
         config: LoCoBench configuration object
-        base_url: Base URL for the OpenAI-compatible API
-        api_key: API key for authentication
+        base_url: Base URL for the OpenAI-compatible API (defaults to config.mcp_filter.base_url)
+        api_key: API key for authentication (defaults to config.mcp_filter.api_key)
+        model: Model name for the filter agent (defaults to config.mcp_filter.model)
         
     Returns:
         LoCoBenchScenarioFilter instance
     """
-    return LoCoBenchScenarioFilter(config, base_url=base_url, api_key=api_key)
+    return LoCoBenchScenarioFilter(config, base_url=base_url, api_key=api_key, model=model)

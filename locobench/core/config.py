@@ -141,6 +141,26 @@ class RetrievalConfig:
 
 
 @dataclass
+class MCPFilterConfig:
+    """Configuration for MCP Scenario Filter"""
+    
+    # Enable/disable MCP-based scenario filtering
+    enabled: bool = False
+    
+    # Base URL for OpenAI-compatible API
+    base_url: str = "http://localhost:8000/v1"
+    
+    # API key for authentication
+    api_key: str = "111"
+    
+    # Model name for the filter agent
+    model: str = "gpt-oss"
+    
+    # Use LLM-based intelligent selection (if False, uses basic filtering only)
+    use_llm_selection: bool = True
+
+
+@dataclass
 class Phase4Config:
     """Configuration for Phase 4: Automated Validation & Evaluation"""
     
@@ -196,6 +216,7 @@ class Config:
     phase3: Phase3Config = field(default_factory=Phase3Config)
     phase4: Phase4Config = field(default_factory=Phase4Config)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    mcp_filter: MCPFilterConfig = field(default_factory=MCPFilterConfig)
 
     @classmethod 
     def from_yaml(cls, config_path: str = None) -> 'Config':
@@ -226,7 +247,8 @@ class Config:
             phase2=Phase2Config(**yaml_data.get('phase2', {})),
             phase3=Phase3Config(**yaml_data.get('phase3', {})),
             phase4=Phase4Config(**yaml_data.get('phase4', {})),
-            retrieval=RetrievalConfig(**yaml_data.get('retrieval', {}))
+            retrieval=RetrievalConfig(**yaml_data.get('retrieval', {})),
+            mcp_filter=MCPFilterConfig(**yaml_data.get('mcp_filter', {}))
         )
     
     def create_directories(self):

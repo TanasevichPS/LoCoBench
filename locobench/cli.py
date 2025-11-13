@@ -273,7 +273,10 @@ def generate(config_path, phase, dry_run, force, max_concurrent):
 @click.option('--max-concurrent-models', type=int, default=2, help='Maximum number of models to evaluate concurrently (default: 2)')
 @click.option('--max-concurrent-scenarios', type=int, default=1, help='Maximum number of scenarios per model to evaluate concurrently (default: 1)')
 @click.option('--monitor', is_flag=True, help='Start web monitoring dashboard at http://localhost:8080')
-def evaluate(config_path, model, task_category, difficulty, output_file, no_save, no_resume, parallel, max_concurrent_models, max_concurrent_scenarios, monitor):
+@click.option('--enable-mcp-filter', is_flag=True, help='Enable MCP-based scenario filtering (overrides config)')
+@click.option('--mcp-base-url', type=str, help='MCP filter API base URL (overrides config)')
+@click.option('--mcp-api-key', type=str, help='MCP filter API key (overrides config)')
+def evaluate(config_path, model, task_category, difficulty, output_file, no_save, no_resume, parallel, max_concurrent_models, max_concurrent_scenarios, monitor, enable_mcp_filter, mcp_base_url, mcp_api_key):
     """Evaluate models on LoCoBench benchmark"""
     console.print(Panel.fit("🧪 LoCoBench Evaluation", style="bold purple"))
     
@@ -289,6 +292,14 @@ def evaluate(config_path, model, task_category, difficulty, output_file, no_save
     
     try:
         config = Config.from_yaml(config_path)
+        
+        # Override MCP filter settings from CLI if provided
+        if enable_mcp_filter:
+            config.mcp_filter.enabled = True
+        if mcp_base_url:
+            config.mcp_filter.base_url = mcp_base_url
+        if mcp_api_key:
+            config.mcp_filter.api_key = mcp_api_key
         
         from .evaluation.evaluator import run_evaluation
         evaluation_data = run_evaluation(config, model, task_category, difficulty, resume=not no_resume, parallel=parallel, max_concurrent_models=max_concurrent_models, max_concurrent_scenarios=max_concurrent_scenarios)

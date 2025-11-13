@@ -2669,6 +2669,38 @@ def run_evaluation(config: Config, models: Optional[List[str]] = None,
         if not all_scenarios:
             raise ValueError("No scenarios found in scenario files!")
         
+        # Apply MCP filter if enabled
+        if config.mcp_filter.enabled:
+            console.print("🔍 [bold cyan]MCP Scenario Filter enabled[/bold cyan]")
+            try:
+                from ..mcp_scenario_filter import create_scenario_filter
+                
+                # Create MCP filter
+                mcp_filter = create_scenario_filter(
+                    config,
+                    base_url=config.mcp_filter.base_url,
+                    api_key=config.mcp_filter.api_key
+                )
+                
+                # Convert difficulty to list for filtering
+                difficulty_levels_for_filter = [difficulty] if difficulty else None
+                
+                # Filter scenarios using MCP tool
+                console.print(f"📊 Filtering {len(all_scenarios)} scenarios using MCP tool...")
+                all_scenarios = mcp_filter.filter_scenarios_from_files(
+                    scenarios_dir=scenarios_dir,
+                    difficulty_levels=difficulty_levels_for_filter,
+                    task_categories=list(categories) if categories else None,
+                    use_llm_selection=config.mcp_filter.use_llm_selection
+                )
+                
+                console.print(f"✅ MCP filter selected {len(all_scenarios)} scenarios")
+                
+            except Exception as e:
+                logger.error(f"MCP filter failed: {e}")
+                console.print(f"⚠️  [yellow]MCP filter failed, using all scenarios: {e}[/yellow]")
+                # Continue with all scenarios if filter fails
+        
         # Default models if none specified
         if not models:
             available_models = ['openai-o3', 'gemini-2.5-pro']
