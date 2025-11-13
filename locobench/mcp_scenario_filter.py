@@ -10,10 +10,51 @@ import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
+
+# LangChain imports - optional, only needed for LLM-based filtering
+# We'll import lazily to avoid import-time errors
+_LANGCHAIN_AVAILABLE = False
+_ChatOpenAI = None
+_ChatPromptTemplate = None
+_MessagesPlaceholder = None
+_tool = None
+_AgentExecutor = None
+_create_openai_tools_agent = None
+
+def _try_import_langchain():
+    """Try to import LangChain components, handling version differences"""
+    global _LANGCHAIN_AVAILABLE, _ChatOpenAI, _ChatPromptTemplate, _MessagesPlaceholder
+    global _tool, _AgentExecutor, _create_openai_tools_agent
+    
+    if _LANGCHAIN_AVAILABLE:
+        return True
+    
+    try:
+        from langchain_openai import ChatOpenAI as _ChatOpenAI_impl
+        from langchain_core.prompts import ChatPromptTemplate as _ChatPromptTemplate_impl
+        from langchain_core.prompts import MessagesPlaceholder as _MessagesPlaceholder_impl
+        from langchain_core.tools import tool as _tool_impl
+        
+        _ChatOpenAI = _ChatOpenAI_impl
+        _ChatPromptTemplate = _ChatPromptTemplate_impl
+        _MessagesPlaceholder = _MessagesPlaceholder_impl
+        _tool = _tool_impl
+        
+        # Try to import agents
+        try:
+            from langchain.agents import AgentExecutor as _AgentExecutor_impl, create_openai_tools_agent as _create_openai_tools_agent_impl
+            _AgentExecutor = _AgentExecutor_impl
+            _create_openai_tools_agent = _create_openai_tools_agent_impl
+            _LANGCHAIN_AVAILABLE = True
+            return True
+        except (ImportError, ModuleNotFoundError) as e:
+            # LangChain 1.0+ might have different structure or missing dependencies
+            logger.debug(f"Could not import LangChain agents: {e}")
+            return False
+            
+    except (ImportError, ModuleNotFoundError) as e:
+        logger.debug(f"LangChain not available: {e}")
+        return False
 
 from .core.config import Config
 
@@ -40,25 +81,31 @@ class LoCoBenchScenarioFilter:
         self.api_key = api_key or config.mcp_filter.api_key
         model_name = model or config.mcp_filter.model
         
-        # Initialize the LLM model
-        self.model = ChatOpenAI(
-            model=model_name,
-            temperature=0.0,
-            base_url=self.base_url,
-            api_key=self.api_key,
-            streaming=True,
-            timeout=30.0
-        )
-        
-        # Create tools for the agent
-        self.tools = self._create_tools()
-        
-        # Bind tools to model
-        self.model_with_tools = self.model.bind_tools(self.tools)
-        
-        # Create agent prompt
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert at analyzing and filtering code evaluation scenarios.
+        # Initialize LLM model and agent only if LangChain is available and LLM selection is enabled
+        self.agent_executor = None
+        if config.mcp_filter.use_llm_selection:
+            # Try to import LangChain lazily
+            if _try_import_langchain():
+                try:
+                    # Initialize the LLM model
+                    self.model = _ChatOpenAI(
+                    model=model_name,
+                    temperature=0.0,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    streaming=True,
+                    timeout=30.0
+                )
+                
+                # Create tools for the agent
+                self.tools = self._create_tools()
+                
+                # Bind tools to model
+                self.model_with_tools = self.model.bind_tools(self.tools)
+                
+                # Create agent prompt
+                self.prompt = _ChatPromptTemplate.from_messages([
+                    ("system", """You are an expert at analyzing and filtering code evaluation scenarios.
 Your task is to help select relevant scenarios from a collection based on:
 1. Difficulty level (easy, medium, hard, expert)
 2. Programming language support
@@ -88,19 +135,26 @@ Code files are located at: {generated_dir}/{project_dir}/{context_file}
 where context_file comes from the scenario's context_files array.
 
 Provide clear reasoning for your selections."""),
-            ("user", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        # Create agent
-        agent = create_openai_tools_agent(self.model_with_tools, self.tools, self.prompt)
-        
-        # Create agent executor
-        self.agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True
-        )
+                    ("user", "{input}"),
+                    _MessagesPlaceholder(variable_name="agent_scratchpad"),
+                ])
+                
+                # Create agent
+                agent = _create_openai_tools_agent(self.model_with_tools, self.tools, self.prompt)
+                
+                # Create agent executor
+                self.agent_executor = _AgentExecutor(
+                    agent=agent,
+                    tools=self.tools,
+                    verbose=True
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize LangChain agent: {e}. LLM-based filtering will be disabled.")
+                self.agent_executor = None
+        else:
+            self.model = None
+            self.tools = []
+            logger.info("LangChain agent not initialized. Using basic filtering only.")
     
     def _extract_project_dir_from_id(self, scenario_id: str) -> str:
         """Extract project directory name from scenario ID.
@@ -172,7 +226,10 @@ Provide clear reasoning for your selections."""),
     def _create_tools(self) -> List:
         """Create tools for the agent to use"""
         
-        @tool
+        if not _LANGCHAIN_AVAILABLE or _tool is None:
+            return []
+        
+        @_tool
         def read_scenario_file(file_path: str) -> Dict[str, Any]:
             """Read a scenario JSON file and return its contents.
             
@@ -485,8 +542,8 @@ Provide clear reasoning for your selections."""),
         
         logger.info(f"🔍 After basic filtering: {len(all_scenarios)} → {len(filtered_scenarios)} scenarios")
         
-        # If LLM selection is enabled, use agent to further refine selection
-        if use_llm_selection and filtered_scenarios:
+        # If LLM selection is enabled and agent is available, use agent to further refine selection
+        if use_llm_selection and filtered_scenarios and self.agent_executor is not None:
             try:
                 # Store scenarios for tool access
                 self._scenarios_cache = filtered_scenarios
@@ -538,6 +595,9 @@ Start by reading a few scenario files to understand their structure, then apply 
                 # Clean up cache
                 if hasattr(self, '_scenarios_cache'):
                     delattr(self, '_scenarios_cache')
+        elif use_llm_selection:
+            if not _try_import_langchain():
+                logger.warning("LLM-based selection requested but LangChain is not available. Using basic filtering only.")
         
         # Log difficulty distribution after filtering
         if filtered_scenarios:
