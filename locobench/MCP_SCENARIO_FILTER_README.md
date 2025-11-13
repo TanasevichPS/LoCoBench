@@ -85,9 +85,52 @@ The tool uses the following ChatOpenAI configuration:
 The agent has access to the following tools:
 
 1. **read_scenario_file**: Reads a scenario JSON file and returns its contents
-2. **get_scenario_metadata**: Extracts metadata (id, difficulty, language, task_category) from a scenario
-3. **filter_by_difficulty**: Filters scenarios by difficulty level
-4. **filter_by_language**: Filters scenarios by programming language
+2. **read_code_file**: Reads a code file referenced in a scenario's context_files
+   - Requires: `scenario_id` and `context_file` path
+   - Resolves path: `{generated_dir}/{project_dir}/{context_file}`
+   - Example: `read_code_file("c_api_gateway_easy_009_bug_investigation_expert_01", "EduGate_ScholarLink//src//components//validator.c")`
+3. **read_scenario_context_files**: Reads all context files for a scenario
+   - Reads up to `max_files` (default: 10) context files
+   - Returns file contents with metadata
+4. **get_scenario_metadata**: Extracts metadata from a scenario
+   - Returns: id, difficulty, language, task_category, project_dir, context_files_count
+5. **filter_by_difficulty**: Filters scenarios by difficulty level
+6. **filter_by_language**: Filters scenarios by programming language
+
+## Scenario ID Structure
+
+Scenario IDs follow this pattern:
+```
+{language}_{project_name}_{complexity}_{number}_{task_category}_{difficulty}_{instance}
+```
+
+Example: `c_api_gateway_easy_009_bug_investigation_expert_01`
+
+- **Language**: `c` (extracted for language filtering)
+- **Project Directory**: `c_api_gateway_easy_009` (used to locate code files)
+- **Task Category**: `bug_investigation`
+- **Difficulty**: `expert`
+- **Instance**: `01`
+
+## Code File Path Resolution
+
+The tool automatically resolves code file paths using:
+
+1. **Scenario ID** → Extracts project directory name
+2. **Config** → Uses `config.data.generated_dir` as base path
+3. **Context File** → From scenario's `context_files` array
+
+Full path formula:
+```
+{generated_dir}/{project_dir}/{context_file}
+```
+
+Example:
+- Scenario ID: `c_api_gateway_easy_009_bug_investigation_expert_01`
+- Generated Dir: `/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated`
+- Project Dir: `c_api_gateway_easy_009` (extracted from ID)
+- Context File: `EduGate_ScholarLink//src//components//validator.c`
+- Full Path: `/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated/c_api_gateway_easy_009/EduGate_ScholarLink/src/components/validator.c`
 
 ## Filtering Logic
 

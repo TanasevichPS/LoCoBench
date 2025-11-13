@@ -65,6 +65,23 @@ When analyzing scenarios, consider:
 - The programming language used
 - The task category and its requirements
 - The context size and complexity
+- The actual code files referenced in context_files
+
+You can:
+- Read scenario files using read_scenario_file
+- Read actual code files using read_code_file (requires scenario_id and context_file path)
+- Read all context files for a scenario using read_scenario_context_files
+- Extract metadata using get_scenario_metadata
+- Filter scenarios using filter_by_difficulty and filter_by_language
+
+The scenario ID (e.g., "c_api_gateway_easy_009_bug_investigation_expert_01") contains:
+- Language prefix (c, cpp, py, etc.)
+- Project directory name (c_api_gateway_easy_009)
+- Task category (bug_investigation)
+- Difficulty (expert)
+
+Code files are located at: {generated_dir}/{project_dir}/{context_file}
+where context_file comes from the scenario's context_files array.
 
 Provide clear reasoning for your selections."""),
             ("user", "{input}"),
@@ -80,6 +97,73 @@ Provide clear reasoning for your selections."""),
             tools=self.tools,
             verbose=True
         )
+    
+    def _extract_project_dir_from_id(self, scenario_id: str) -> str:
+        """Extract project directory name from scenario ID.
+        
+        Example: "c_api_gateway_easy_009_bug_investigation_expert_01" -> "c_api_gateway_easy_009"
+        
+        Args:
+            scenario_id: Scenario ID string
+            
+        Returns:
+            Project directory name
+        """
+        if not scenario_id:
+            return ""
+        
+        # Split by underscore
+        parts = scenario_id.split('_')
+        
+        # The project directory is typically the first few parts before task_category
+        # Common pattern: {lang}_{project_name}_{complexity}_{number}_{task_category}_{difficulty}_{instance}
+        # We want: {lang}_{project_name}_{complexity}_{number}
+        
+        # Find where task_category starts (common task categories)
+        task_categories = [
+            'architectural_understanding', 'cross_file_refactoring', 'feature_implementation',
+            'bug_investigation', 'multi_session_development', 'code_comprehension',
+            'integration_testing', 'security_analysis'
+        ]
+        
+        # Try to find task category in the parts
+        project_parts = []
+        for i, part in enumerate(parts):
+            # Check if this part or next part starts a task category
+            if part in task_categories or (i < len(parts) - 1 and f"{part}_{parts[i+1]}" in task_categories):
+                break
+            project_parts.append(part)
+        
+        # If we didn't find a task category, take first 4 parts as fallback
+        if not project_parts or len(project_parts) < 2:
+            project_parts = parts[:4] if len(parts) >= 4 else parts
+        
+        return '_'.join(project_parts)
+    
+    def _get_code_file_path(self, scenario_id: str, context_file: str) -> Path:
+        """Get full path to a code file from scenario ID and context file path.
+        
+        Args:
+            scenario_id: Scenario ID (e.g., "c_api_gateway_easy_009_bug_investigation_expert_01")
+            context_file: Relative path from context_files (e.g., "EduGate_ScholarLink//src//components//validator.c")
+            
+        Returns:
+            Full Path object to the code file
+        """
+        # Extract project directory from scenario ID
+        project_dir = self._extract_project_dir_from_id(scenario_id)
+        
+        # Build base path: {generated_dir}/{project_dir}
+        generated_dir = Path(self.config.data.generated_dir)
+        project_path = generated_dir / project_dir
+        
+        # Normalize context_file path (replace // with /)
+        normalized_context_file = context_file.replace('//', '/')
+        
+        # Build full path
+        full_path = project_path / normalized_context_file
+        
+        return full_path
     
     def _create_tools(self) -> List:
         """Create tools for the agent to use"""
@@ -110,6 +194,126 @@ Provide clear reasoning for your selections."""),
                 return {"error": str(e)}
         
         @tool
+        def read_code_file(scenario_id: str, context_file: str) -> Dict[str, Any]:
+            """Read a code file referenced in a scenario's context_files.
+            
+            The file path is resolved using the scenario ID to find the project directory
+            and the context_file path from the scenario's context_files array.
+            
+            Args:
+                scenario_id: Scenario ID (e.g., "c_api_gateway_easy_009_bug_investigation_expert_01")
+                context_file: Relative path from context_files (e.g., "EduGate_ScholarLink//src//components//validator.c")
+                
+            Returns:
+                Dictionary with file content and metadata:
+                {
+                    "path": full_path,
+                    "content": file_content,
+                    "exists": True/False
+                }
+            """
+            try:
+                # Get full path to the code file
+                full_path = self._get_code_file_path(scenario_id, context_file)
+                
+                if not full_path.exists():
+                    return {
+                        "path": str(full_path),
+                        "exists": False,
+                        "error": f"File not found: {full_path}"
+                    }
+                
+                # Read file content
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                return {
+                    "path": str(full_path),
+                    "content": content,
+                    "exists": True,
+                    "size": len(content),
+                    "lines": len(content.splitlines())
+                }
+            except Exception as e:
+                logger.error(f"Error reading code file {context_file} for scenario {scenario_id}: {e}")
+                return {
+                    "path": str(context_file),
+                    "exists": False,
+                    "error": str(e)
+                }
+        
+        @tool
+        def read_scenario_context_files(scenario: Dict[str, Any], max_files: int = 10) -> Dict[str, Any]:
+            """Read all context files for a scenario.
+            
+            Args:
+                scenario: Scenario dictionary with 'id' and 'context_files' fields
+                max_files: Maximum number of files to read (default: 10)
+                
+            Returns:
+                Dictionary with file contents:
+                {
+                    "scenario_id": scenario_id,
+                    "files": [
+                        {"path": path, "content": content, "exists": True/False},
+                        ...
+                    ]
+                }
+            """
+            scenario_id = scenario.get('id', '')
+            context_files = scenario.get('context_files', [])
+            
+            if not scenario_id:
+                return {"error": "Scenario ID is missing"}
+            
+            if not context_files:
+                return {"error": "No context_files found in scenario"}
+            
+            # Limit number of files to read
+            files_to_read = context_files[:max_files]
+            
+            file_contents = []
+            for context_file in files_to_read:
+                # Call the method directly to get file data
+                try:
+                    full_path = self._get_code_file_path(scenario_id, context_file)
+                    
+                    if not full_path.exists():
+                        file_data = {
+                            "path": str(full_path),
+                            "exists": False,
+                            "error": f"File not found: {full_path}"
+                        }
+                    else:
+                        with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        file_data = {
+                            "path": str(full_path),
+                            "content": content,
+                            "exists": True,
+                            "size": len(content),
+                            "lines": len(content.splitlines())
+                        }
+                except Exception as e:
+                    file_data = {
+                        "path": str(context_file),
+                        "exists": False,
+                        "error": str(e)
+                    }
+                
+                file_contents.append({
+                    "context_file": context_file,
+                    **file_data
+                })
+            
+            return {
+                "scenario_id": scenario_id,
+                "total_context_files": len(context_files),
+                "files_read": len(file_contents),
+                "files": file_contents
+            }
+        
+        @tool
         def get_scenario_metadata(scenario: Dict[str, Any]) -> Dict[str, Any]:
             """Extract metadata from a scenario.
             
@@ -117,20 +321,27 @@ Provide clear reasoning for your selections."""),
                 scenario: Scenario dictionary
                 
             Returns:
-                Dictionary with scenario metadata (id, difficulty, language, task_category)
+                Dictionary with scenario metadata (id, difficulty, language, task_category, project_dir, context_files_count)
             """
             scenario_id = scenario.get('id', '')
             difficulty = scenario.get('difficulty', '').lower()
             task_category = scenario.get('task_category', '')
+            context_files = scenario.get('context_files', [])
             
             # Extract language from scenario ID
             language = self._get_scenario_language(scenario)
+            
+            # Extract project directory
+            project_dir = self._extract_project_dir_from_id(scenario_id)
             
             return {
                 "id": scenario_id,
                 "difficulty": difficulty,
                 "language": language,
-                "task_category": task_category
+                "task_category": task_category,
+                "project_dir": project_dir,
+                "context_files_count": len(context_files),
+                "context_files": context_files[:5]  # First 5 files as preview
             }
         
         @tool
@@ -169,7 +380,7 @@ Provide clear reasoning for your selections."""),
                     filtered.append(scenario)
             return filtered
         
-        return [read_scenario_file, get_scenario_metadata, filter_by_difficulty, filter_by_language]
+        return [read_scenario_file, read_code_file, read_scenario_context_files, get_scenario_metadata, filter_by_difficulty, filter_by_language]
     
     def _get_scenario_language(self, scenario: Dict[str, Any]) -> str:
         """Extract language from scenario ID"""
@@ -293,8 +504,16 @@ Available scenario files:
 Your task:
 1. Read the scenario files using read_scenario_file tool
 2. Extract metadata from each scenario using get_scenario_metadata tool
-3. Apply filtering using filter_by_difficulty and filter_by_language tools
-4. Select the most relevant scenarios based on the criteria
+3. Optionally read actual code files using read_code_file or read_scenario_context_files to analyze content
+4. Apply filtering using filter_by_difficulty and filter_by_language tools
+5. Select the most relevant scenarios based on the criteria
+
+The scenario ID format is: {language}_{project_name}_{complexity}_{number}_{task_category}_{difficulty}_{instance}
+Example: "c_api_gateway_easy_009_bug_investigation_expert_01"
+
+To read code files, use:
+- read_code_file(scenario_id, context_file_path) for a single file
+- read_scenario_context_files(scenario) to read all context files for a scenario
 
 Start by reading a few scenario files to understand their structure, then apply the appropriate filters."""
                 
