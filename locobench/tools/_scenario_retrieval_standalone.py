@@ -46,13 +46,38 @@ def get_most_relevant_file_from_scenario(
         
         project_name = None
         
-        # Strategy: Find where task_category starts by checking from the end
-        for i in range(len(parts) - 1, -1, -1):
-            potential_category = '_'.join(parts[i:])
-            if potential_category in task_categories:
-                project_name = '_'.join(parts[:i])
-                logger.debug(f"Found task category '{potential_category}' at position {i}, project_name: {project_name}")
-                break
+        # Strategy: Find where task_category starts
+        # Format: {project_name}_{task_category}_{difficulty}_{number}
+        # Example: java_web_social_medium_073_architectural_understanding_expert_01
+        # Project name: java_web_social_medium_073
+        
+        # First, try to find task category by checking from the end
+        # Check patterns like: ..._category_difficulty_number
+        for category in task_categories:
+            category_parts = category.split('_')
+            # Check if scenario ends with category_difficulty_number
+            # parts[-len(category_parts)-2:-2] should match category_parts
+            if len(parts) >= len(category_parts) + 2:
+                # Check the slice before the last 2 elements (difficulty + number)
+                end_idx = -len(category_parts) - 2
+                if parts[end_idx:-2] == category_parts:
+                    project_name = '_'.join(parts[:end_idx])
+                    logger.debug(f"Found task category '{category}' at end (slice {end_idx}:-2), project_name: {project_name}")
+                    break
+        
+        # If not found, search for category followed by difficulty anywhere
+        if not project_name:
+            for category in task_categories:
+                category_parts = category.split('_')
+                for i in range(len(parts) - len(category_parts)):
+                    if parts[i:i+len(category_parts)] == category_parts:
+                        # Check if followed by difficulty (makes it more likely to be correct)
+                        if i + len(category_parts) < len(parts) and parts[i + len(category_parts)] in difficulties:
+                            project_name = '_'.join(parts[:i])
+                            logger.debug(f"Found task category '{category}' at position {i}, project_name: {project_name}")
+                            break
+                if project_name:
+                    break
         
         if not project_name:
             for i in range(len(parts) - 1, 0, -1):
@@ -171,30 +196,38 @@ def get_context_files_from_scenario(
         
         project_name = None
         
-        # Strategy: Find where task_category starts by checking from the end
-        # Look for task_category patterns (can be multi-word)
-        # Check from end to beginning: len(parts)-1 down to 0
-        for i in range(len(parts) - 1, -1, -1):
-            # Check if parts[i:] forms a task category
-            potential_category = '_'.join(parts[i:])
-            if potential_category in task_categories:
-                # Found task category at position i, project name is everything before it
-                project_name = '_'.join(parts[:i])
-                logger.debug(f"Found task category '{potential_category}' at position {i}, project_name: {project_name}")
-                break
+        # Strategy: Find where task_category starts
+        # First, try to find task category by checking from the end
+        for category in task_categories:
+            category_parts = category.split('_')
+            if len(parts) >= len(category_parts) + 2:
+                end_idx = -len(category_parts) - 2
+                if parts[end_idx:-2] == category_parts:
+                    project_name = '_'.join(parts[:end_idx])
+                    logger.debug(f"Found task category '{category}' at end, project_name: {project_name}")
+                    break
         
-        # If not found by task category, try finding difficulty level
+        # If not found, search for category followed by difficulty
+        if not project_name:
+            for category in task_categories:
+                category_parts = category.split('_')
+                for i in range(len(parts) - len(category_parts)):
+                    if parts[i:i+len(category_parts)] == category_parts:
+                        if i + len(category_parts) < len(parts) and parts[i + len(category_parts)] in difficulties:
+                            project_name = '_'.join(parts[:i])
+                            logger.debug(f"Found task category '{category}' at position {i}, project_name: {project_name}")
+                            break
+                if project_name:
+                    break
+        
         if not project_name:
             for i in range(len(parts) - 1, 0, -1):
                 if parts[i] in difficulties:
-                    # Difficulty found at position i, project name is everything before it
                     project_name = '_'.join(parts[:i])
                     logger.debug(f"Found difficulty '{parts[i]}' at position {i}, project_name: {project_name}")
                     break
         
-        # Fallback: assume format is name_category_difficulty_number (remove last 3 parts)
         if not project_name and len(parts) >= 4:
-            # Try removing last 3 parts (assuming: ..._category_difficulty_number)
             project_name = '_'.join(parts[:-3])
             logger.debug(f"Fallback: Using first {len(parts)-3} parts as project_name: {project_name}")
         
