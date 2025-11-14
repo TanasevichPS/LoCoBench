@@ -2553,28 +2553,28 @@ class LoCoBenchEvaluator:
                                 if len(retrieved_context) > max_chars:
                                     retrieved_context = retrieved_context[:max_chars]
                         else:
-                                # Last resort: try to get context files from scenario
+                            # Last resort: try to get context files from scenario
+                            try:
+                                # Try standalone version first (no LangChain deps)
                                 try:
-                                    # Try standalone version first (no LangChain deps)
-                                    try:
-                                        from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                    except (ImportError, AttributeError):
-                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                    base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                                    if not Path(base_path).is_absolute():
-                                        base_path = str(Path.cwd() / base_path)
-                                    
-                                    # Build absolute path for scenarios directory
-                                    scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
-                                    if not scenarios_dir.is_absolute():
-                                        scenarios_dir = Path.cwd() / scenarios_dir
-                                    scenarios_dir = str(scenarios_dir.resolve())
-                                    
-                                    scenario_context = get_context_files_from_scenario(
-                                        scenario_id,
-                                        scenarios_dir=scenarios_dir,
-                                        base_path=base_path
-                                    )
+                                    from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
+                                except (ImportError, AttributeError):
+                                    from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                if not Path(base_path).is_absolute():
+                                    base_path = str(Path.cwd() / base_path)
+                                
+                                # Build absolute path for scenarios directory
+                                scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                                if not scenarios_dir.is_absolute():
+                                    scenarios_dir = Path.cwd() / scenarios_dir
+                                scenarios_dir = str(scenarios_dir.resolve())
+                                
+                                scenario_context = get_context_files_from_scenario(
+                                    scenario_id,
+                                    scenarios_dir=scenarios_dir,
+                                    base_path=base_path
+                                )
                                 if scenario_context:
                                     retrieved_context = "\n\n".join([
                                         f"=== {path} ===\n{content}"
