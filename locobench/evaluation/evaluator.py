@@ -2311,19 +2311,40 @@ class LoCoBenchEvaluator:
                                 from ..tools.scenario_retrieval import get_context_files_from_scenario
                             
                             # Build absolute paths
-                            base_path_for_context = str(project_dir_path.parent) if project_dir_path.parent.name == "generated" else str(project_dir_path)
+                            # Try to find the generated directory
+                            # project_dir is like: data/generated/java_web_ecommerce_expert_000/CommerceSphereEnterpriseSuite
+                            # We need: data/generated (or absolute equivalent)
+                            base_path_for_context = None
+                            
+                            # Walk up from project_dir to find "generated" directory
+                            current = project_dir_path
+                            while current != current.parent:
+                                if current.name == "generated":
+                                    base_path_for_context = str(current)
+                                    break
+                                current = current.parent
+                            
+                            # If not found, use parent of project_dir
+                            if not base_path_for_context:
+                                base_path_for_context = str(project_dir_path.parent)
+                            
                             base_path_obj = Path(base_path_for_context)
                             if not base_path_obj.is_absolute():
                                 base_path_for_context = str((Path.cwd() / base_path_obj).resolve())
                             else:
                                 base_path_for_context = str(base_path_obj.resolve())
                             
+                            logger.debug(f"Determined base_path_for_context: {base_path_for_context} from project_dir: {project_dir_path}")
+                            
                             scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
                             if not scenarios_dir.is_absolute():
                                 scenarios_dir = Path.cwd() / scenarios_dir
                             scenarios_dir = str(scenarios_dir.resolve())
                             
-                            logger.debug(f"Loading context files from scenario: {scenario_id}, base_path={base_path_for_context}")
+                            logger.debug(f"Loading context files from scenario: {scenario_id}")
+                            logger.debug(f"  scenarios_dir: {scenarios_dir}")
+                            logger.debug(f"  base_path: {base_path_for_context}")
+                            logger.debug(f"  project_dir from scenario: {project_dir_path}")
                             
                             scenario_context = get_context_files_from_scenario(
                                 scenario_id,
@@ -2337,7 +2358,8 @@ class LoCoBenchEvaluator:
                                 logger.info("📋 Loaded %d files from scenario file for retrieval", len(context_files_content))
                             else:
                                 logger.warning("No context files found in scenario file, trying direct file loading...")
-                                raise ValueError("No scenario context")
+                                logger.debug(f"  Scenario file should be at: {Path(scenarios_dir) / f'{scenario_id}.json'}")
+                                # Don't raise, just fall through to direct loading
                         except Exception as e:
                             logger.debug(f"Could not load from scenario file: {e}, trying direct file loading...")
                             # Fall through to direct file loading

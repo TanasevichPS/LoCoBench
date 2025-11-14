@@ -171,32 +171,79 @@ def get_context_files_from_scenario(
             logger.error(f"Could not extract project name from scenario ID: {scenario_id}")
             return {}
         
+        logger.debug(f"Extracted project name: {project_name} from scenario ID: {scenario_id}")
+        
         # Get context files
         context_files = scenario_data.get('context_files', [])
+        logger.debug(f"Context files type: {type(context_files)}, count: {len(context_files) if isinstance(context_files, (list, dict)) else 'N/A'}")
+        
         if isinstance(context_files, dict):
+            # Already have content
+            logger.debug(f"Context files is dict with {len(context_files)} items")
             return context_files
         elif isinstance(context_files, list):
+            logger.debug(f"Context files is list with {len(context_files)} items")
+            logger.debug(f"Project name: {project_name}, base_path: {base_path}")
+            
             full_paths = []
             base_dir = Path(base_path) / project_name
+            logger.debug(f"Base directory: {base_dir}")
+            logger.debug(f"Base directory exists: {base_dir.exists()}")
             
-            for rel_path in context_files:
+            if not base_dir.exists():
+                # Try alternative: maybe project_name needs to be extracted differently
+                logger.warning(f"Base directory does not exist: {base_dir}")
+                # List what's actually in base_path
+                base_path_obj = Path(base_path)
+                if base_path_obj.exists():
+                    logger.debug(f"Contents of {base_path}: {list(base_path_obj.iterdir())[:5]}")
+            
+            for rel_path in context_files[:5]:  # Log first 5
+                normalized = rel_path.replace('//', '/').replace('\\', '/').lstrip('/')
+                full_path = base_dir / normalized
+                full_paths.append(str(full_path))
+                logger.debug(f"Built path: {rel_path} -> {full_path} (exists: {full_path.exists()})")
+            
+            # Build all paths
+            for rel_path in context_files[5:]:
                 normalized = rel_path.replace('//', '/').replace('\\', '/').lstrip('/')
                 full_path = base_dir / normalized
                 full_paths.append(str(full_path))
             
+            logger.debug(f"Built {len(full_paths)} full paths from {len(context_files)} context files")
+            
+            # Read all files
             context_files_content = {}
+            files_found = 0
+            files_not_found = 0
+            
             for full_path in full_paths:
                 path = Path(full_path)
                 if path.exists() and path.is_file():
                     try:
                         content = path.read_text(encoding='utf-8', errors='ignore')
-                        rel_path = str(path.relative_to(Path(base_path) / project_name))
+                        # Try to get relative path
+                        try:
+                            rel_path = str(path.relative_to(Path(base_path) / project_name))
+                        except ValueError:
+                            # If relative path fails, try to find matching original path
+                            rel_path = next((cf for cf in context_files if normalized in cf.replace('//', '/') or cf.replace('//', '/') in str(path)), str(path.name))
                         context_files_content[rel_path] = content
+                        files_found += 1
+                        if files_found <= 3:  # Log first 3
+                            logger.debug(f"Successfully read file: {rel_path} ({len(content)} chars)")
                     except Exception as e:
                         logger.warning(f"Could not read file {full_path}: {e}")
+                        files_not_found += 1
+                else:
+                    files_not_found += 1
+                    if files_not_found <= 3:  # Log first 3 missing files
+                        logger.debug(f"File does not exist: {full_path}")
             
+            logger.info(f"Loaded {files_found} context files from {len(full_paths)} paths ({files_not_found} not found)")
             return context_files_content
         else:
+            logger.warning(f"Context files is unexpected type: {type(context_files)}")
             return {}
             
     except Exception as e:
