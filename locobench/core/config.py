@@ -160,9 +160,10 @@ class RetrievalConfig:
     local_model_path: Optional[str] = None
     
     # MCP-based retrieval configuration
-    use_mcp: bool = False  # Enable MCP-based intelligent retrieval
+    use_mcp: bool = False  # Enable MCP-based intelligent retrieval (uses tools directly)
+    use_mcp_agent: bool = False  # Enable MCP LangChain agent for retrieval (requires LLM)
     mcp_provider: Optional[str] = None  # "openai", "anthropic", "ollama", "huggingface", "local_openai"
-    mcp_model: Optional[str] = None  # Model name for MCP
+    mcp_model: Optional[str] = None  # Model name for MCP agent
     mcp_base_url: Optional[str] = None  # Base URL for local providers
     mcp_api_key: Optional[str] = None  # API key for local providers
     
