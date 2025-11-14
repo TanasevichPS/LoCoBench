@@ -2298,53 +2298,71 @@ class LoCoBenchEvaluator:
                     # NOTE: load_context_files_from_scenario removed - retrieval module deleted
                     # Loading files manually instead
                     context_files_content = {}
-                    for file_path in context_obj:
-                        # Handle both relative and absolute paths
-                        if Path(file_path).is_absolute():
-                            full_path = Path(file_path)
-                        else:
-                            # Try relative to project_dir first
-                            full_path = Path(project_dir) / file_path
-                            # If not found, try using scenario-based path building
-                            if not full_path.exists():
-                                scenario_id = scenario.get('id', '')
-                                if scenario_id:
-                                    try:
-                                        try:
-                                            # Try standalone version first (no LangChain deps)
-                                            try:
-                                                from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                            except (ImportError, AttributeError):
-                                                from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                            
-                                            # Build absolute path for scenarios directory
-                                            scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
-                                            if not scenarios_dir.is_absolute():
-                                                scenarios_dir = Path.cwd() / scenarios_dir
-                                            scenarios_dir = str(scenarios_dir.resolve())
-                                            
-                                            base_path_for_context = str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
-                                            
-                                            scenario_context = get_context_files_from_scenario(
-                                                scenario_id,
-                                                scenarios_dir=scenarios_dir,
-                                                base_path=base_path_for_context
-                                            )
-                                        except (ImportError, AttributeError) as import_err:
-                                            logger.debug(f"Could not import get_context_files_from_scenario: {import_err}")
-                                            scenario_context = {}
-                                        if file_path in scenario_context:
-                                            context_files_content[file_path] = scenario_context[file_path]
-                                            continue
-                                    except Exception as e:
-                                        logger.debug(f"Could not use scenario-based path resolution: {e}")
-                        
-                        if full_path.exists() and full_path.is_file():
+                    project_dir_path = Path(project_dir)
+                    
+                    # First, try to load all context files from scenario file (more reliable)
+                    scenario_id = scenario.get('id', '')
+                    if scenario_id:
+                        try:
+                            # Try standalone version first (no LangChain deps)
                             try:
-                                context_files_content[file_path] = full_path.read_text(encoding='utf-8')
-                            except Exception as e:
-                                logger.warning(f"Could not read file {file_path}: {e}")
-                    logger.info("📋 Loaded %d files from scenario['context_files'] list for retrieval", len(context_files_content))
+                                from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
+                            except (ImportError, AttributeError):
+                                from ..tools.scenario_retrieval import get_context_files_from_scenario
+                            
+                            # Build absolute paths
+                            base_path_for_context = str(project_dir_path.parent) if project_dir_path.parent.name == "generated" else str(project_dir_path)
+                            base_path_obj = Path(base_path_for_context)
+                            if not base_path_obj.is_absolute():
+                                base_path_for_context = str((Path.cwd() / base_path_obj).resolve())
+                            else:
+                                base_path_for_context = str(base_path_obj.resolve())
+                            
+                            scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                            if not scenarios_dir.is_absolute():
+                                scenarios_dir = Path.cwd() / scenarios_dir
+                            scenarios_dir = str(scenarios_dir.resolve())
+                            
+                            logger.debug(f"Loading context files from scenario: {scenario_id}, base_path={base_path_for_context}")
+                            
+                            scenario_context = get_context_files_from_scenario(
+                                scenario_id,
+                                scenarios_dir=scenarios_dir,
+                                base_path=base_path_for_context
+                            )
+                            
+                            if scenario_context:
+                                # Use context files from scenario
+                                context_files_content = scenario_context
+                                logger.info("📋 Loaded %d files from scenario file for retrieval", len(context_files_content))
+                            else:
+                                logger.warning("No context files found in scenario file, trying direct file loading...")
+                                raise ValueError("No scenario context")
+                        except Exception as e:
+                            logger.debug(f"Could not load from scenario file: {e}, trying direct file loading...")
+                            # Fall through to direct file loading
+                    
+                    # If scenario loading failed or returned empty, try direct file loading
+                    if not context_files_content:
+                        for file_path in context_obj:
+                            # Handle both relative and absolute paths
+                            if Path(file_path).is_absolute():
+                                full_path = Path(file_path)
+                            else:
+                                # Try relative to project_dir
+                                full_path = project_dir_path / file_path
+                                # Normalize path separators
+                                full_path = Path(str(full_path).replace('//', '/'))
+                            
+                            if full_path.exists() and full_path.is_file():
+                                try:
+                                    context_files_content[file_path] = full_path.read_text(encoding='utf-8', errors='ignore')
+                                except Exception as e:
+                                    logger.warning(f"Could not read file {file_path}: {e}")
+                            else:
+                                logger.debug(f"File not found: {full_path} (tried from project_dir: {project_dir_path})")
+                        
+                        logger.info("📋 Loaded %d files from scenario['context_files'] list for retrieval", len(context_files_content))
                 else:
                     # No context_files available - cannot perform retrieval
                     logger.warning(
@@ -2533,6 +2551,53 @@ class LoCoBenchEvaluator:
                                     max_chars = effective_max_context * 4
                                     if len(retrieved_context) > max_chars:
                                         retrieved_context = retrieved_context[:max_chars]
+                            else:
+                                # Try to load context files from scenario file as fallback
+                                logger.info("No context_files_content, trying to load from scenario file...")
+                                try:
+                                    # Try standalone version first (no LangChain deps)
+                                    try:
+                                        from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
+                                    except (ImportError, AttributeError):
+                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                    
+                                    base_path_fallback = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                    base_path_obj = Path(base_path_fallback)
+                                    if not base_path_obj.is_absolute():
+                                        base_path_fallback = str((Path.cwd() / base_path_obj).resolve())
+                                    else:
+                                        base_path_fallback = str(base_path_obj.resolve())
+                                    
+                                    scenarios_dir_fallback = Path(self.config.data.output_dir) / "scenarios"
+                                    if not scenarios_dir_fallback.is_absolute():
+                                        scenarios_dir_fallback = str((Path.cwd() / scenarios_dir_fallback).resolve())
+                                    else:
+                                        scenarios_dir_fallback = str(scenarios_dir_fallback.resolve())
+                                    
+                                    logger.debug(f"Fallback: Loading context from scenario file, scenarios_dir={scenarios_dir_fallback}, base_path={base_path_fallback}")
+                                    
+                                    scenario_context = get_context_files_from_scenario(
+                                        scenario_id,
+                                        scenarios_dir=scenarios_dir_fallback,
+                                        base_path=base_path_fallback
+                                    )
+                                    
+                                    if scenario_context:
+                                        retrieved_context = "\n\n".join([
+                                            f"=== {path} ===\n{content}"
+                                            for path, content in scenario_context.items()
+                                        ])
+                                        if effective_max_context > 0:
+                                            max_chars = effective_max_context * 4
+                                            if len(retrieved_context) > max_chars:
+                                                retrieved_context = retrieved_context[:max_chars]
+                                        logger.info(f"✅ Loaded {len(scenario_context)} context files from scenario file")
+                                    else:
+                                        logger.warning(f"⚠️ No context files found in scenario file for {scenario_id}")
+                                except Exception as e3:
+                                    logger.warning(f"Could not load context from scenario file fallback: {e3}")
+                                    import traceback
+                                    logger.debug(traceback.format_exc())
                     except Exception as e:
                         # Check if it's a LangChain import error
                         error_str = str(e)
