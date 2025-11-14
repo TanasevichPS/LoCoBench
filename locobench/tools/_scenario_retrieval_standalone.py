@@ -104,9 +104,16 @@ def get_most_relevant_file_from_scenario(
             logger.warning(f"No full paths generated for scenario {scenario_id}")
             return None
         
-        # Find most relevant file using keyword matching
+        # Find most relevant file using chunk-based analysis
         task_prompt = scenario_data.get('task_prompt', '')
-        task_words = set(re.findall(r'\b\w+\b', task_prompt.lower()))
+        
+        try:
+            from .file_chunking import chunk_file_smart
+            from .chunk_analysis import analyze_chunk_relevance
+        except ImportError:
+            # Fallback to simple keyword matching
+            chunk_file_smart = None
+            analyze_chunk_relevance = None
         
         best_file = None
         best_score = 0
@@ -118,10 +125,28 @@ def get_most_relevant_file_from_scenario(
             
             try:
                 content = path.read_text(encoding='utf-8', errors='ignore')
-                content_words = set(re.findall(r'\b\w+\b', content.lower()))
-                matches = len(task_words.intersection(content_words))
-                file_size_factor = min(1.0, 1000 / max(len(content), 1))
-                score = matches * file_size_factor
+                
+                # Use chunk-based analysis if available
+                if chunk_file_smart and analyze_chunk_relevance:
+                    chunks = chunk_file_smart(content, max_chunk_size=2000)
+                    # Analyze top 3 chunks
+                    chunk_scores = []
+                    for chunk in chunks[:3]:  # Only check first 3 chunks
+                        score = analyze_chunk_relevance(chunk['content'], task_prompt)
+                        chunk_scores.append(score)
+                    
+                    # Use max chunk score as file score
+                    if chunk_scores:
+                        score = max(chunk_scores)
+                    else:
+                        score = 0.0
+                else:
+                    # Fallback to simple keyword matching
+                    task_words = set(re.findall(r'\b\w+\b', task_prompt.lower()))
+                    content_words = set(re.findall(r'\b\w+\b', content.lower()))
+                    matches = len(task_words.intersection(content_words))
+                    file_size_factor = min(1.0, 1000 / max(len(content), 1))
+                    score = matches * file_size_factor
                 
                 if score > best_score:
                     best_score = score
@@ -131,7 +156,7 @@ def get_most_relevant_file_from_scenario(
                 continue
         
         if best_file:
-            logger.info(f"Found most relevant file for scenario {scenario_id}: {best_file}")
+            logger.info(f"Found most relevant file for scenario {scenario_id}: {best_file} (score: {best_score:.3f})")
             return best_file
         else:
             logger.warning(f"No relevant file found for scenario {scenario_id}")

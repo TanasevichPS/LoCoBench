@@ -4,9 +4,35 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 logger = logging.getLogger(__name__)
+
+# Import chunking utilities
+try:
+    from .file_chunking import chunk_file_smart, chunk_file_by_lines, get_file_chunks_summary
+except ImportError:
+    # Fallback if import fails
+    def chunk_file_smart(content, max_chunk_size=2000):
+        lines = content.split('\n')
+        chunks = []
+        lines_per_chunk = 100
+        for i in range(0, len(lines), lines_per_chunk):
+            chunk_lines = lines[i:i+lines_per_chunk]
+            chunks.append({
+                'content': '\n'.join(chunk_lines),
+                'start_line': i + 1,
+                'end_line': min(i + lines_per_chunk, len(lines)),
+                'chunk_index': len(chunks),
+                'line_count': len(chunk_lines)
+            })
+        return chunks
+    
+    def chunk_file_by_lines(content, lines_per_chunk=100, overlap_lines=10):
+        return chunk_file_smart(content, max_chunk_size=lines_per_chunk * 50)
+    
+    def get_file_chunks_summary(file_path, max_chunks=10):
+        return f"File: {Path(file_path).name}"
 
 
 def _select_file_by_keywords(task_prompt: str, file_paths: List[str]) -> Optional[str]:
@@ -157,34 +183,63 @@ def get_most_relevant_file_with_mcp_agent(
             timeout=30.0
         )
         
-        # Create a tool that reads files from the full_paths list
+        # Create a tool that reads file chunks (to avoid context overflow)
         @tool
-        def read_relevant_file(file_index: int, max_chars: int = 5000) -> str:
-            """Read a file by index from the available files for this scenario.
+        def read_file_chunk(file_index: int, chunk_index: int = 0) -> str:
+            """Read a specific chunk from a file by index.
             
             Args:
                 file_index: Index of the file to read (0-based)
-                max_chars: Maximum characters to read (default: 5000 to avoid context overflow)
+                chunk_index: Index of the chunk to read (0-based, default: 0 for first chunk)
             
             Returns:
-                File contents (truncated if too large) or error message
+                Chunk content with metadata or error message
             """
             if 0 <= file_index < len(full_paths):
                 file_path = full_paths[file_index]
-                # Read file directly (don't use tool inside tool)
                 try:
                     path = Path(file_path)
                     if not path.exists():
                         return f"Error: File '{file_path}' does not exist"
+                    
                     content = path.read_text(encoding='utf-8', errors='ignore')
-                    # Truncate if too large
-                    if len(content) > max_chars:
-                        content = content[:max_chars] + f"\n\n... (truncated, file is {len(content)} chars, showing first {max_chars})"
-                    return content
+                    # Chunk the file
+                    chunks = chunk_file_smart(content, max_chunk_size=2000)
+                    
+                    if chunk_index < len(chunks):
+                        chunk = chunks[chunk_index]
+                        return f"File: {path.name}\nChunk {chunk_index + 1}/{len(chunks)}\nLines {chunk.get('start_line', '?')}-{chunk.get('end_line', '?')}\n\n{chunk['content']}"
+                    else:
+                        return f"Error: Chunk index {chunk_index} out of range. File has {len(chunks)} chunks."
                 except Exception as e:
                     return f"Error reading file '{file_path}': {str(e)}"
             else:
                 return f"Error: Invalid file index {file_index}. Available files: {len(full_paths)}"
+        
+        @tool
+        def get_file_chunk_count(file_index: int) -> str:
+            """Get the number of chunks in a file.
+            
+            Args:
+                file_index: Index of the file (0-based)
+            
+            Returns:
+                Number of chunks or error message
+            """
+            if 0 <= file_index < len(full_paths):
+                file_path = full_paths[file_index]
+                try:
+                    path = Path(file_path)
+                    if not path.exists():
+                        return f"Error: File '{file_path}' does not exist"
+                    
+                    content = path.read_text(encoding='utf-8', errors='ignore')
+                    chunks = chunk_file_smart(content, max_chunk_size=2000)
+                    return f"File {file_index} ({path.name}) has {len(chunks)} chunks"
+                except Exception as e:
+                    return f"Error: {str(e)}"
+            else:
+                return f"Error: Invalid file index {file_index}"
         
         @tool
         def list_available_files() -> str:
@@ -199,21 +254,30 @@ def get_most_relevant_file_with_mcp_agent(
                 file_list.append(f"{i}: {file_name} ({file_path})")
             return "\n".join(file_list)
         
-        # Create agent with the file reading tools
+        # Create agent with chunked file reading tools
         # Limit task_prompt length to avoid context overflow
-        task_prompt_short = task_prompt[:500] if len(task_prompt) > 500 else task_prompt
+        task_prompt_short = task_prompt[:300] if len(task_prompt) > 300 else task_prompt
         
         agent = create_agent(
             model,
-            tools=[read_relevant_file, list_available_files],
+            tools=[read_file_chunk, get_file_chunk_count, list_available_files],
             system_prompt=f"""You are a helpful assistant that finds the most relevant file for a task.
 
 Task prompt: {task_prompt_short}
 
 Your goal is to identify which file (by index) is most relevant to the task prompt. 
-Use list_available_files() to see all files, then read_relevant_file(index, max_chars=5000) to read files (files are truncated to 5000 chars).
-Read only 2-3 most promising files based on their names, then determine which one is most relevant.
-Return ONLY the file index number (0-based) of the most relevant file."""
+Files are split into chunks to avoid context overflow.
+
+Process:
+1. Use list_available_files() to see all available files
+2. For 2-3 most promising files:
+   - Use get_file_chunk_count(file_index) to see how many chunks each file has
+   - Use read_file_chunk(file_index, chunk_index=0) to read the first chunk of each file
+   - If needed, read chunk_index=1, 2, etc. for more context (but limit to 2-3 chunks per file)
+3. Compare the chunks and determine which file is most relevant
+4. Return ONLY the file index number (0-based) of the most relevant file.
+
+Important: Read only 2-3 files and 1-2 chunks per file to avoid context overflow."""
         )
         
         # Invoke agent to find relevant file
@@ -221,7 +285,7 @@ Return ONLY the file index number (0-based) of the most relevant file."""
             result = agent.invoke({
                 "messages": [{
                     "role": "user",
-                    "content": f"Find the most relevant file for this task: {task_prompt_short[:300]}. Use list_available_files() first, then read_relevant_file() for 2-3 promising files. Return only the file index number."
+                    "content": f"Find the most relevant file for this task: {task_prompt_short}. Use list_available_files(), then get_file_chunk_count() and read_file_chunk() for 2-3 promising files. Read only 1-2 chunks per file. Return only the file index number."
                 }]
             })
             
