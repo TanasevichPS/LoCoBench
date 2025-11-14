@@ -2311,7 +2311,11 @@ class LoCoBenchEvaluator:
                                 if scenario_id:
                                     try:
                                         try:
-                                            from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                            # Try standalone version first (no LangChain deps)
+                                            try:
+                                                from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
+                                            except (ImportError, AttributeError):
+                                                from ..tools.scenario_retrieval import get_context_files_from_scenario
                                             
                                             # Build absolute path for scenarios directory
                                             scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
@@ -2461,12 +2465,16 @@ class LoCoBenchEvaluator:
                         else:
                             # Use direct tool-based retrieval (default)
                             # Import with explicit error handling to avoid LangChain import issues
+                            # Try standalone version first (no LangChain deps)
                             try:
-                                from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
-                            except ImportError as import_err:
-                                # If import fails due to LangChain issues, skip retrieval
-                                logger.warning(f"Could not import scenario_retrieval (LangChain issue?): {import_err}")
-                                get_most_relevant_file_from_scenario = None
+                                from ..tools._scenario_retrieval_standalone import get_most_relevant_file_from_scenario
+                            except (ImportError, AttributeError):
+                                # Fallback to regular version
+                                try:
+                                    from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                                except (ImportError, AttributeError) as import_err:
+                                    logger.warning(f"Could not import scenario_retrieval: {import_err}")
+                                    get_most_relevant_file_from_scenario = None
                             
                             # Get base path from config if available
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
@@ -2526,7 +2534,12 @@ class LoCoBenchEvaluator:
                                     if len(retrieved_context) > max_chars:
                                         retrieved_context = retrieved_context[:max_chars]
                     except Exception as e:
-                        logger.warning(f"Error using scenario-based retrieval: {e}, falling back to simple method")
+                        # Check if it's a LangChain import error
+                        error_str = str(e)
+                        if "StructuredTool" in error_str or "langchain.tools" in error_str or "cannot import name" in error_str:
+                            logger.warning(f"LangChain import error in scenario-based retrieval (this is OK, using fallback): {e}")
+                        else:
+                            logger.warning(f"Error using scenario-based retrieval: {e}, falling back to simple method")
                         import traceback
                         logger.debug(traceback.format_exc())
                         retrieved_context = ""
@@ -2542,7 +2555,11 @@ class LoCoBenchEvaluator:
                         else:
                                 # Last resort: try to get context files from scenario
                                 try:
-                                    from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                    # Try standalone version first (no LangChain deps)
+                                    try:
+                                        from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
+                                    except (ImportError, AttributeError):
+                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
                                     base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
                                     if not Path(base_path).is_absolute():
                                         base_path = str(Path.cwd() / base_path)
@@ -2569,7 +2586,12 @@ class LoCoBenchEvaluator:
                                             retrieved_context = retrieved_context[:max_chars]
                                     logger.info("✅ Loaded context files from scenario file")
                             except Exception as e2:
-                                logger.warning(f"Could not load context from scenario file: {e2}")
+                                # Check if it's a LangChain import error
+                                error_str = str(e2)
+                                if "StructuredTool" in error_str or "langchain.tools" in error_str or "cannot import name" in error_str:
+                                    logger.debug(f"LangChain import error when loading scenario context (this is OK): {e2}")
+                                else:
+                                    logger.warning(f"Could not load context from scenario file: {e2}")
                 else:
                     # No scenario ID, use simple fallback
                     retrieved_context = ""
