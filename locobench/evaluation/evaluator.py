@@ -2465,11 +2465,18 @@ class LoCoBenchEvaluator:
                 if scenario_id:
                     try:
                         # Check if MCP agent should be used (default: False to avoid context overflow)
-                        use_mcp_agent = getattr(retrieval_config, 'use_mcp_agent', False)
+                        # MCP agent is DISABLED by default - only enable if explicitly set to True in config
+                        use_mcp_agent = False
+                        if hasattr(retrieval_config, 'use_mcp_agent'):
+                            use_mcp_agent_value = getattr(retrieval_config, 'use_mcp_agent')
+                            # Only enable if explicitly True
+                            if use_mcp_agent_value is True or (isinstance(use_mcp_agent_value, str) and use_mcp_agent_value.lower() == 'true'):
+                                use_mcp_agent = True
                         
-                        # Warn if MCP agent is enabled (it can cause context overflow)
+                        # Only warn if MCP agent is explicitly enabled
                         if use_mcp_agent:
                             logger.warning("⚠️ MCP agent mode enabled - this may cause context overflow errors with large files")
+                            logger.info("💡 Tip: Set 'use_mcp_agent: false' in config.yaml to use faster direct retrieval instead")
                         
                         most_relevant_file = None
                         
