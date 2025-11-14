@@ -79,7 +79,8 @@ def get_most_relevant_file_with_mcp_agent(
         scenario_json = scenario_path.read_text(encoding='utf-8')
         scenario_data = json.loads(scenario_json)
         
-        # Extract project name manually
+        # Extract project name - must stop BEFORE task category
+        # Format: {project_name}_{task_category}_{difficulty}_{number}
         parts = scenario_id.split('_')
         task_categories = [
             'architectural_understanding', 'cross_file_refactoring', 'feature_implementation',
@@ -89,14 +90,20 @@ def get_most_relevant_file_with_mcp_agent(
         difficulties = ['easy', 'medium', 'hard', 'expert']
         
         project_name = None
-        for i in range(len(parts) - 1, 0, -1):
+        
+        # Strategy: Find where task_category starts by checking from the end
+        for i in range(len(parts) - 1, -1, -1):
             potential_category = '_'.join(parts[i:])
             if potential_category in task_categories:
                 project_name = '_'.join(parts[:i])
+                logger.debug(f"Found task category '{potential_category}' at position {i}, project_name: {project_name}")
                 break
-            if parts[i] in difficulties:
-                project_name = '_'.join(parts[:i])
-                break
+        
+        if not project_name:
+            for i in range(len(parts) - 1, 0, -1):
+                if parts[i] in difficulties:
+                    project_name = '_'.join(parts[:i])
+                    break
         
         if not project_name and len(parts) >= 4:
             project_name = '_'.join(parts[:-3])
@@ -104,6 +111,8 @@ def get_most_relevant_file_with_mcp_agent(
         if not project_name:
             logger.error(f"Could not extract project name from scenario ID: {scenario_id}")
             return None
+        
+        logger.debug(f"Extracted project name: '{project_name}' from scenario ID: '{scenario_id}'")
         
         # Get context files
         context_files = scenario_data.get('context_files', [])
