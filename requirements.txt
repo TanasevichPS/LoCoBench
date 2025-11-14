@@ -54,3 +54,9 @@ tiktoken>=0.5.0
 # Hugging Face models support
 transformers>=4.30.0
 torch>=2.0.0
+
+# LangChain for MCP agent integration
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-core>=0.1.0
+langchainhub>=0.1.0
