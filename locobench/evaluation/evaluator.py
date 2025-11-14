@@ -2385,19 +2385,45 @@ class LoCoBenchEvaluator:
                 scenario_id = scenario.get('id', '')
                 if scenario_id:
                     try:
-                        from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                        # Check if MCP agent should be used
+                        use_mcp_agent = getattr(retrieval_config, 'use_mcp_agent', False)
                         
-                        # Get base path from config if available
-                        base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                        if not Path(base_path).is_absolute():
-                            # Make it absolute relative to workspace
-                            base_path = str(Path.cwd() / base_path)
-                        
-                        most_relevant_file = get_most_relevant_file_from_scenario(
-                            scenario_id,
-                            scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
-                            base_path=base_path
-                        )
+                        if use_mcp_agent:
+                            # Use LangChain MCP agent for retrieval
+                            from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
+                            
+                            base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                            if not Path(base_path).is_absolute():
+                                base_path = str(Path.cwd() / base_path)
+                            
+                            mcp_base_url = getattr(retrieval_config, 'mcp_base_url', None) or getattr(self.config.api, 'custom_model_base_url', 'http://10.199.178.176:8080/v1')
+                            mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
+                            mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
+                            
+                            most_relevant_file = get_most_relevant_file_with_mcp_agent(
+                                scenario_id,
+                                task_prompt_text,
+                                scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                base_path=base_path,
+                                mcp_base_url=mcp_base_url,
+                                mcp_api_key=mcp_api_key,
+                                mcp_model=mcp_model
+                            )
+                        else:
+                            # Use direct tool-based retrieval (default)
+                            from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                            
+                            # Get base path from config if available
+                            base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                            if not Path(base_path).is_absolute():
+                                # Make it absolute relative to workspace
+                                base_path = str(Path.cwd() / base_path)
+                            
+                            most_relevant_file = get_most_relevant_file_from_scenario(
+                                scenario_id,
+                                scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                base_path=base_path
+                            )
                         
                         if most_relevant_file and Path(most_relevant_file).exists():
                             # Read the most relevant file
