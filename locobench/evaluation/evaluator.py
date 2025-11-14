@@ -2299,7 +2299,29 @@ class LoCoBenchEvaluator:
                     # Loading files manually instead
                     context_files_content = {}
                     for file_path in context_obj:
-                        full_path = Path(project_dir) / file_path
+                        # Handle both relative and absolute paths
+                        if Path(file_path).is_absolute():
+                            full_path = Path(file_path)
+                        else:
+                            # Try relative to project_dir first
+                            full_path = Path(project_dir) / file_path
+                            # If not found, try using scenario-based path building
+                            if not full_path.exists():
+                                scenario_id = scenario.get('id', '')
+                                if scenario_id:
+                                    try:
+                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                        scenario_context = get_context_files_from_scenario(
+                                            scenario_id,
+                                            scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                            base_path=str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
+                                        )
+                                        if file_path in scenario_context:
+                                            context_files_content[file_path] = scenario_context[file_path]
+                                            continue
+                                    except Exception as e:
+                                        logger.debug(f"Could not use scenario-based path resolution: {e}")
+                        
                         if full_path.exists() and full_path.is_file():
                             try:
                                 context_files_content[file_path] = full_path.read_text(encoding='utf-8')
@@ -2454,6 +2476,8 @@ class LoCoBenchEvaluator:
                                         retrieved_context = retrieved_context[:max_chars]
                     except Exception as e:
                         logger.warning(f"Error using scenario-based retrieval: {e}, falling back to simple method")
+                        import traceback
+                        logger.debug(traceback.format_exc())
                         retrieved_context = ""
                         if context_files_content:
                             retrieved_context = "\n\n".join([
@@ -2464,6 +2488,31 @@ class LoCoBenchEvaluator:
                                 max_chars = effective_max_context * 4
                                 if len(retrieved_context) > max_chars:
                                     retrieved_context = retrieved_context[:max_chars]
+                        else:
+                            # Last resort: try to get context files from scenario
+                            try:
+                                from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                if not Path(base_path).is_absolute():
+                                    base_path = str(Path.cwd() / base_path)
+                                
+                                scenario_context = get_context_files_from_scenario(
+                                    scenario_id,
+                                    scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                    base_path=base_path
+                                )
+                                if scenario_context:
+                                    retrieved_context = "\n\n".join([
+                                        f"=== {path} ===\n{content}"
+                                        for path, content in scenario_context.items()
+                                    ])
+                                    if effective_max_context > 0:
+                                        max_chars = effective_max_context * 4
+                                        if len(retrieved_context) > max_chars:
+                                            retrieved_context = retrieved_context[:max_chars]
+                                    logger.info("✅ Loaded context files from scenario file")
+                            except Exception as e2:
+                                logger.warning(f"Could not load context from scenario file: {e2}")
                 else:
                     # No scenario ID, use simple fallback
                     retrieved_context = ""
