@@ -159,14 +159,15 @@ def get_most_relevant_file_with_mcp_agent(
         
         # Create a tool that reads files from the full_paths list
         @tool
-        def read_relevant_file(file_index: int) -> str:
+        def read_relevant_file(file_index: int, max_chars: int = 5000) -> str:
             """Read a file by index from the available files for this scenario.
             
             Args:
                 file_index: Index of the file to read (0-based)
+                max_chars: Maximum characters to read (default: 5000 to avoid context overflow)
             
             Returns:
-                File contents or error message
+                File contents (truncated if too large) or error message
             """
             if 0 <= file_index < len(full_paths):
                 file_path = full_paths[file_index]
@@ -175,7 +176,11 @@ def get_most_relevant_file_with_mcp_agent(
                     path = Path(file_path)
                     if not path.exists():
                         return f"Error: File '{file_path}' does not exist"
-                    return path.read_text(encoding='utf-8', errors='ignore')
+                    content = path.read_text(encoding='utf-8', errors='ignore')
+                    # Truncate if too large
+                    if len(content) > max_chars:
+                        content = content[:max_chars] + f"\n\n... (truncated, file is {len(content)} chars, showing first {max_chars})"
+                    return content
                 except Exception as e:
                     return f"Error reading file '{file_path}': {str(e)}"
             else:
@@ -195,16 +200,19 @@ def get_most_relevant_file_with_mcp_agent(
             return "\n".join(file_list)
         
         # Create agent with the file reading tools
+        # Limit task_prompt length to avoid context overflow
+        task_prompt_short = task_prompt[:500] if len(task_prompt) > 500 else task_prompt
+        
         agent = create_agent(
             model,
             tools=[read_relevant_file, list_available_files],
             system_prompt=f"""You are a helpful assistant that finds the most relevant file for a task.
 
-Task prompt: {task_prompt}
+Task prompt: {task_prompt_short}
 
 Your goal is to identify which file (by index) is most relevant to the task prompt. 
-Use list_available_files() to see all files, then read_relevant_file(index) to read files.
-After reading the files, determine which one contains the most relevant information for completing the task.
+Use list_available_files() to see all files, then read_relevant_file(index, max_chars=5000) to read files (files are truncated to 5000 chars).
+Read only 2-3 most promising files based on their names, then determine which one is most relevant.
 Return ONLY the file index number (0-based) of the most relevant file."""
         )
         
@@ -213,7 +221,7 @@ Return ONLY the file index number (0-based) of the most relevant file."""
             result = agent.invoke({
                 "messages": [{
                     "role": "user",
-                    "content": f"Find the most relevant file for this task: {task_prompt}. Use the tools to read files and determine which one is most relevant. Return only the file index number."
+                    "content": f"Find the most relevant file for this task: {task_prompt_short[:300]}. Use list_available_files() first, then read_relevant_file() for 2-3 promising files. Return only the file index number."
                 }]
             })
             

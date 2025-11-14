@@ -2464,46 +2464,62 @@ class LoCoBenchEvaluator:
                 scenario_id = scenario.get('id', '')
                 if scenario_id:
                     try:
-                        # Check if MCP agent should be used
+                        # Check if MCP agent should be used (default: False to avoid context overflow)
                         use_mcp_agent = getattr(retrieval_config, 'use_mcp_agent', False)
+                        
+                        # Warn if MCP agent is enabled (it can cause context overflow)
+                        if use_mcp_agent:
+                            logger.warning("⚠️ MCP agent mode enabled - this may cause context overflow errors with large files")
+                        
+                        most_relevant_file = None
                         
                         if use_mcp_agent:
                             # Use LangChain MCP agent for retrieval
-                            from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
-                            
-                            base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                            base_path_obj = Path(base_path)
-                            if not base_path_obj.is_absolute():
-                                base_path = str((Path.cwd() / base_path).resolve())
-                            else:
-                                base_path = str(base_path_obj.resolve())
-                            
-                            mcp_base_url = getattr(retrieval_config, 'mcp_base_url', None) or getattr(self.config.api, 'custom_model_base_url', 'http://10.199.178.176:8080/v1')
-                            mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
-                            mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
-                            
-                            # Build absolute path for scenarios directory
-                            output_dir = self.config.data.output_dir
-                            scenarios_dir_obj = Path(output_dir) / "scenarios"
-                            if not scenarios_dir_obj.is_absolute():
-                                scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
-                            else:
-                                scenarios_dir = str(scenarios_dir_obj.resolve())
-                            
-                            logger.debug(f"Using scenarios_dir: {scenarios_dir}")
-                            logger.debug(f"Using base_path: {base_path}")
-                            
-                            most_relevant_file = get_most_relevant_file_with_mcp_agent(
-                                scenario_id,
-                                task_prompt_text,
-                                scenarios_dir=scenarios_dir,
-                                base_path=base_path,
-                                mcp_base_url=mcp_base_url,
-                                mcp_api_key=mcp_api_key,
-                                mcp_model=mcp_model
-                            )
-                        else:
-                            # Use direct tool-based retrieval (default)
+                            try:
+                                from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
+                                
+                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                base_path_obj = Path(base_path)
+                                if not base_path_obj.is_absolute():
+                                    base_path = str((Path.cwd() / base_path_obj).resolve())
+                                else:
+                                    base_path = str(base_path_obj.resolve())
+                                
+                                mcp_base_url = getattr(retrieval_config, 'mcp_base_url', None) or getattr(self.config.api, 'custom_model_base_url', 'http://10.199.178.176:8080/v1')
+                                mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
+                                mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
+                                
+                                # Build absolute path for scenarios directory
+                                output_dir = self.config.data.output_dir
+                                scenarios_dir_obj = Path(output_dir) / "scenarios"
+                                if not scenarios_dir_obj.is_absolute():
+                                    scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
+                                else:
+                                    scenarios_dir = str(scenarios_dir_obj.resolve())
+                                
+                                logger.debug(f"Using scenarios_dir: {scenarios_dir}")
+                                logger.debug(f"Using base_path: {base_path}")
+                                
+                                most_relevant_file = get_most_relevant_file_with_mcp_agent(
+                                    scenario_id,
+                                    task_prompt_text,
+                                    scenarios_dir=scenarios_dir,
+                                    base_path=base_path,
+                                    mcp_base_url=mcp_base_url,
+                                    mcp_api_key=mcp_api_key,
+                                    mcp_model=mcp_model
+                                )
+                            except Exception as agent_err:
+                                # If MCP agent fails (e.g., context overflow), fall back to direct retrieval
+                                error_str = str(agent_err)
+                                if "exceed" in error_str.lower() or "context" in error_str.lower() or "400" in error_str:
+                                    logger.warning(f"MCP agent failed due to context overflow, falling back to direct retrieval: {agent_err}")
+                                else:
+                                    logger.warning(f"MCP agent failed, falling back to direct retrieval: {agent_err}")
+                                most_relevant_file = None
+                        
+                        # Use direct tool-based retrieval (default, or fallback if agent failed/disabled)
+                        if not use_mcp_agent or most_relevant_file is None:
                             # Import with explicit error handling to avoid LangChain import issues
                             # Try standalone version first (no LangChain deps)
                             try:
@@ -2537,14 +2553,13 @@ class LoCoBenchEvaluator:
                             logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                             logger.debug(f"Using base_path: {base_path}")
                             
-                            if get_most_relevant_file_from_scenario is None:
-                                most_relevant_file = None
-                            else:
+                            if get_most_relevant_file_from_scenario is not None:
                                 most_relevant_file = get_most_relevant_file_from_scenario(
                                     scenario_id,
                                     scenarios_dir=scenarios_dir,
                                     base_path=base_path
                                 )
+                            # else: most_relevant_file is already None from agent failure
                         
                         if most_relevant_file and Path(most_relevant_file).exists():
                             # Read the most relevant file
