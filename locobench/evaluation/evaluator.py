@@ -2310,21 +2310,25 @@ class LoCoBenchEvaluator:
                                 scenario_id = scenario.get('id', '')
                                 if scenario_id:
                                     try:
-                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                        
-                                        # Build absolute path for scenarios directory
-                                        scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
-                                        if not scenarios_dir.is_absolute():
-                                            scenarios_dir = Path.cwd() / scenarios_dir
-                                        scenarios_dir = str(scenarios_dir.resolve())
-                                        
-                                        base_path_for_context = str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
-                                        
-                                        scenario_context = get_context_files_from_scenario(
-                                            scenario_id,
-                                            scenarios_dir=scenarios_dir,
-                                            base_path=base_path_for_context
-                                        )
+                                        try:
+                                            from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                            
+                                            # Build absolute path for scenarios directory
+                                            scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                                            if not scenarios_dir.is_absolute():
+                                                scenarios_dir = Path.cwd() / scenarios_dir
+                                            scenarios_dir = str(scenarios_dir.resolve())
+                                            
+                                            base_path_for_context = str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
+                                            
+                                            scenario_context = get_context_files_from_scenario(
+                                                scenario_id,
+                                                scenarios_dir=scenarios_dir,
+                                                base_path=base_path_for_context
+                                            )
+                                        except (ImportError, AttributeError) as import_err:
+                                            logger.debug(f"Could not import get_context_files_from_scenario: {import_err}")
+                                            scenario_context = {}
                                         if file_path in scenario_context:
                                             context_files_content[file_path] = scenario_context[file_path]
                                             continue
@@ -2456,7 +2460,13 @@ class LoCoBenchEvaluator:
                             )
                         else:
                             # Use direct tool-based retrieval (default)
-                            from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                            # Import with explicit error handling to avoid LangChain import issues
+                            try:
+                                from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                            except ImportError as import_err:
+                                # If import fails due to LangChain issues, skip retrieval
+                                logger.warning(f"Could not import scenario_retrieval (LangChain issue?): {import_err}")
+                                get_most_relevant_file_from_scenario = None
                             
                             # Get base path from config if available
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
@@ -2479,11 +2489,14 @@ class LoCoBenchEvaluator:
                             logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                             logger.debug(f"Using base_path: {base_path}")
                             
-                            most_relevant_file = get_most_relevant_file_from_scenario(
-                                scenario_id,
-                                scenarios_dir=scenarios_dir,
-                                base_path=base_path
-                            )
+                            if get_most_relevant_file_from_scenario is None:
+                                most_relevant_file = None
+                            else:
+                                most_relevant_file = get_most_relevant_file_from_scenario(
+                                    scenario_id,
+                                    scenarios_dir=scenarios_dir,
+                                    base_path=base_path
+                                )
                         
                         if most_relevant_file and Path(most_relevant_file).exists():
                             # Read the most relevant file
@@ -2527,24 +2540,24 @@ class LoCoBenchEvaluator:
                                 if len(retrieved_context) > max_chars:
                                     retrieved_context = retrieved_context[:max_chars]
                         else:
-                            # Last resort: try to get context files from scenario
-                            try:
-                                from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                                if not Path(base_path).is_absolute():
-                                    base_path = str(Path.cwd() / base_path)
-                                
-                                        # Build absolute path for scenarios directory
-                                        scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
-                                        if not scenarios_dir.is_absolute():
-                                            scenarios_dir = Path.cwd() / scenarios_dir
-                                        scenarios_dir = str(scenarios_dir.resolve())
-                                        
-                                        scenario_context = get_context_files_from_scenario(
-                                            scenario_id,
-                                            scenarios_dir=scenarios_dir,
-                                            base_path=base_path
-                                        )
+                                # Last resort: try to get context files from scenario
+                                try:
+                                    from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                    base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                    if not Path(base_path).is_absolute():
+                                        base_path = str(Path.cwd() / base_path)
+                                    
+                                    # Build absolute path for scenarios directory
+                                    scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                                    if not scenarios_dir.is_absolute():
+                                        scenarios_dir = Path.cwd() / scenarios_dir
+                                    scenarios_dir = str(scenarios_dir.resolve())
+                                    
+                                    scenario_context = get_context_files_from_scenario(
+                                        scenario_id,
+                                        scenarios_dir=scenarios_dir,
+                                        base_path=base_path
+                                    )
                                 if scenario_context:
                                     retrieved_context = "\n\n".join([
                                         f"=== {path} ===\n{content}"

@@ -67,24 +67,42 @@ def get_most_relevant_file_with_mcp_agent(
         from langchain_openai import ChatOpenAI
         from langchain_core.tools import tool
         from langchain.agents import create_agent
-        from .file_tools import (
-            read_scenario_file,
-            extract_project_name_from_scenario_id,
-            build_full_file_paths
-        )
         
-        # Read scenario file
-        scenario_json = read_scenario_file(scenario_id, scenarios_dir)
-        if scenario_json.startswith("Error"):
-            logger.error(f"Failed to read scenario file: {scenario_json}")
+        # Read scenario file manually (avoid importing file_tools which has LangChain decorators)
+        scenario_path = Path(scenarios_dir) / f"{scenario_id}.json"
+        scenario_path = scenario_path.resolve()
+        
+        if not scenario_path.exists():
+            logger.error(f"Scenario file not found: {scenario_path}")
             return None
         
+        scenario_json = scenario_path.read_text(encoding='utf-8')
         scenario_data = json.loads(scenario_json)
         
-        # Extract project name
-        project_name = extract_project_name_from_scenario_id(scenario_id)
-        if project_name.startswith("Error"):
-            logger.error(f"Failed to extract project name: {project_name}")
+        # Extract project name manually
+        parts = scenario_id.split('_')
+        task_categories = [
+            'architectural_understanding', 'cross_file_refactoring', 'feature_implementation',
+            'bug_investigation', 'multi_session_development', 'code_comprehension',
+            'integration_testing', 'security_analysis'
+        ]
+        difficulties = ['easy', 'medium', 'hard', 'expert']
+        
+        project_name = None
+        for i in range(len(parts) - 1, 0, -1):
+            potential_category = '_'.join(parts[i:])
+            if potential_category in task_categories:
+                project_name = '_'.join(parts[:i])
+                break
+            if parts[i] in difficulties:
+                project_name = '_'.join(parts[:i])
+                break
+        
+        if not project_name and len(parts) >= 4:
+            project_name = '_'.join(parts[:-3])
+        
+        if not project_name:
+            logger.error(f"Could not extract project name from scenario ID: {scenario_id}")
             return None
         
         # Get context files
@@ -99,15 +117,17 @@ def get_most_relevant_file_with_mcp_agent(
             logger.warning(f"Empty context_files list in scenario {scenario_id}")
             return None
         
-        # Build full paths
-        context_files_json = json.dumps(context_files)
-        full_paths_json = build_full_file_paths(project_name, context_files_json, base_path)
-        if full_paths_json.startswith("Error"):
-            logger.error(f"Failed to build file paths: {full_paths_json}")
-            return None
+        # Build full paths manually (avoid importing file_tools)
+        full_paths = []
+        base_dir = Path(base_path) / project_name
         
-        full_paths_data = json.loads(full_paths_json)
-        full_paths = full_paths_data.get('full_paths', [])
+        for rel_path in context_files:
+            # Normalize path separators (handle //)
+            normalized = rel_path.replace('//', '/').replace('\\', '/')
+            # Remove leading slash if present
+            normalized = normalized.lstrip('/')
+            full_path = base_dir / normalized
+            full_paths.append(str(full_path))
         
         if not full_paths:
             logger.warning(f"No full paths generated for scenario {scenario_id}")
