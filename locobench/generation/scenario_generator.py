@@ -14,7 +14,7 @@ from rich.console import Console
 from ..core.task import TaskCategory, DifficultyLevel
 from ..core.config import Config
 from .synthetic_generator import MultiLLMGenerator
-from ..retrieval import retrieve_relevant_embedding
+# from ..retrieval import retrieve_relevant_embedding  # Removed - retrieval module deleted
 
 logger = logging.getLogger(__name__)
 
@@ -528,89 +528,16 @@ class ScenarioGenerator:
         Rank files directly using embedding-based retrieval.
         Uses category-specific query expansion and multi-query retrieval for better accuracy.
         """
-        from ..retrieval import (
-            _rank_files_with_embeddings,
-            _load_embedding_model,
-            _expand_query_for_retrieval,
-            _generate_multi_queries,
-            _get_category_specific_config
-        )
+        # NOTE: Retrieval functions removed - retrieval module deleted
+        # Simple fallback: return equal scores for all files
+        logger.warning("⚠️ Retrieval module removed - using simple file ranking fallback")
         
-        retrieval_config = self.config.retrieval
-        
-        # Load embedding model
-        model = _load_embedding_model(
-            retrieval_config.local_model_path,
-            retrieval_config.model_name
-        )
-        
-        if not model:
-            logger.warning("⚠️ Could not load embedding model for direct ranking")
+        if not files:
             return {}
         
-        # Convert files to list format for ranking
-        file_list = [
-            {"path": path, "content": content, "length": len(content)}
-            for path, content in files.items()
-        ]
-        
-        if not file_list:
-            return {}
-        
-        # Get category-specific config for better retrieval
-        category_config = _get_category_specific_config(task_category.value)
-        
-        # Expand query with category-specific terms
-        expanded_query = _expand_query_for_retrieval(task_prompt, task_category.value)
-        
-        # Use multi-query retrieval for better accuracy
-        if retrieval_config.use_multi_query:
-            multi_queries = _generate_multi_queries(
-                task_prompt,
-                num_queries=min(5, len(file_list)),  # Limit queries based on file count
-                task_type=task_category.value
-            )
-            
-            # Aggregate scores from multiple queries
-            all_scores = {}
-            query_weights = [1.0] + [0.8] * (len(multi_queries) - 1)  # First query has higher weight
-            
-            for query_idx, query in enumerate(multi_queries):
-                query_expanded = _expand_query_for_retrieval(query, task_category.value)
-                ranked_files = _rank_files_with_embeddings(model, query, file_list, expanded_query=query_expanded)
-                
-                weight = query_weights[query_idx] if query_idx < len(query_weights) else 0.7
-                
-                for file_info in ranked_files:
-                    file_path = file_info["path"]
-                    similarity = file_info.get("similarity", 0.0)
-                    
-                    if file_path not in all_scores:
-                        all_scores[file_path] = []
-                    all_scores[file_path].append(similarity * weight)
-            
-            # Average scores across queries (weighted)
-            file_scores = {}
-            for file_path, scores in all_scores.items():
-                file_scores[file_path] = sum(scores) / len(scores)
-        else:
-            # Single query ranking
-            ranked_files = _rank_files_with_embeddings(model, task_prompt, file_list, expanded_query=expanded_query)
-            file_scores = {
-                file_info["path"]: file_info.get("similarity", 0.0)
-                for file_info in ranked_files
-            }
-        
-        # Apply aggressive mode boost if needed
-        if aggressive:
-            # Boost larger files
-            for file_path in file_scores:
-                file_info = next((f for f in file_list if f["path"] == file_path), None)
-                if file_info:
-                    size_score = min(file_info["length"] / 10000, 1.0)
-                    file_scores[file_path] += size_score * 0.2  # Boost by up to 0.2
-        
-        return file_scores
+        # Return equal scores for all files (simple fallback)
+        equal_score = 1.0 / len(files) if files else 0.0
+        return {path: equal_score for path in files.keys()}
 
     def _get_core_files_for_category(self, task_category: TaskCategory, project_files: Dict[str, str]) -> List[str]:
         """Get core files that are essential for each task category."""

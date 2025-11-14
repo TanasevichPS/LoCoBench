@@ -27,7 +27,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
-from ..retrieval import retrieve_relevant, load_context_files_from_scenario
+# from ..retrieval import retrieve_relevant, load_context_files_from_scenario  # Removed - retrieval module deleted
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -2295,11 +2295,16 @@ class LoCoBenchEvaluator:
                     logger.info("📋 Using %d files from scenario['context_files'] for retrieval", len(context_files_content))
                 elif isinstance(context_obj, list) and project_dir:
                     # Context files are provided as list of paths - load only these files
-                    context_files_content = load_context_files_from_scenario(
-                        scenario,
-                        project_dir=project_dir,
-                        include_all_project_files=False,  # Use only files from scenario['context_files']
-                    )
+                    # NOTE: load_context_files_from_scenario removed - retrieval module deleted
+                    # Loading files manually instead
+                    context_files_content = {}
+                    for file_path in context_obj:
+                        full_path = Path(project_dir) / file_path
+                        if full_path.exists() and full_path.is_file():
+                            try:
+                                context_files_content[file_path] = full_path.read_text(encoding='utf-8')
+                            except Exception as e:
+                                logger.warning(f"Could not read file {file_path}: {e}")
                     logger.info("📋 Loaded %d files from scenario['context_files'] list for retrieval", len(context_files_content))
                 else:
                     # No context_files available - cannot perform retrieval
@@ -2376,31 +2381,22 @@ class LoCoBenchEvaluator:
                     effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 
-                retrieved_context = retrieve_relevant(
-                    context_files_content,
-                    task_prompt_text,
-                    top_k=retrieval_config.top_k,
-                    method=retrieval_config.method,
-                    model_name=retrieval_config.model_name,
-                    project_dir=project_dir,
-                    top_percent=effective_top_percent,
-                    max_context_tokens=effective_max_context,
-                    local_model_path=retrieval_config.local_model_path,
-                    chunk_size=retrieval_config.chunk_size,
-                    smart_chunking=use_smart_chunking,
-                    chunks_per_file=effective_chunks_per_file,
-                    retrieval_chunk_size=int(effective_chunk_size),
-                    use_multi_query=getattr(retrieval_config, 'use_multi_query', True),
-                    use_hybrid_search=getattr(retrieval_config, 'use_hybrid_search', True),
-                    hybrid_alpha=getattr(retrieval_config, 'hybrid_alpha', 0.7),
-                    task_category=task_category,  # Pass task_category to retrieval
-                    use_mcp=getattr(retrieval_config, 'use_mcp', False),  # MCP parameters
-                    mcp_provider=getattr(retrieval_config, 'mcp_provider', None),
-                    mcp_model=getattr(retrieval_config, 'mcp_model', None),
-                    mcp_base_url=getattr(retrieval_config, 'mcp_base_url', None),
-                    mcp_api_key=getattr(retrieval_config, 'mcp_api_key', None),
-                    config=self.config,  # Pass config object for MCP
-                )
+                # NOTE: retrieve_relevant removed - retrieval module deleted
+                # Using all context files content as retrieved context for now
+                retrieved_context = ""
+                if context_files_content:
+                    # Simple fallback: use all context files
+                    retrieved_context = "\n\n".join([
+                        f"=== {path} ===\n{content}"
+                        for path, content in context_files_content.items()
+                    ])
+                    # Limit to max_context_tokens if specified
+                    if effective_max_context > 0:
+                        # Rough token estimation (4 chars per token)
+                        max_chars = effective_max_context * 4
+                        if len(retrieved_context) > max_chars:
+                            retrieved_context = retrieved_context[:max_chars]
+                            logger.warning("Truncated context to %d characters", max_chars)
 
                 if retrieved_context:
                     logger.info(
@@ -2447,11 +2443,16 @@ class LoCoBenchEvaluator:
             elif isinstance(context_obj, list) and project_dir:
                 # Context files are provided as list of paths - load only these files
                 logger.debug("📋 Attempting to load %d files from list", len(context_obj))
-                context_files_content = load_context_files_from_scenario(
-                    scenario,
-                    project_dir=project_dir,
-                    include_all_project_files=False,  # Use only files from scenario['context_files']
-                )
+                # NOTE: load_context_files_from_scenario removed - retrieval module deleted
+                # Loading files manually instead
+                context_files_content = {}
+                for file_path in context_obj:
+                    full_path = Path(project_dir) / file_path
+                    if full_path.exists() and full_path.is_file():
+                        try:
+                            context_files_content[file_path] = full_path.read_text(encoding='utf-8')
+                        except Exception as e:
+                            logger.warning(f"Could not read file {file_path}: {e}")
                 if not context_files_content:
                     logger.warning(
                         "⚠️ No files found from context_files list for scenario %s",

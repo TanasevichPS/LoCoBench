@@ -44,10 +44,6 @@ pytest-asyncio>=0.21.0
 black>=23.0.0
 flake8>=6.0.0
 
-# Retrieval-Augmented Generation (RAG)
-sentence-transformers>=2.2.0
-rank-bm25>=0.2.2
-
 # Token counting (optional, for accurate OpenAI token counting)
 tiktoken>=0.5.0
 
