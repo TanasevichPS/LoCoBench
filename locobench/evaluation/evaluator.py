@@ -2381,22 +2381,75 @@ class LoCoBenchEvaluator:
                     effective_max_context = int(retrieval_config.max_context_tokens)
                     use_smart_chunking = getattr(retrieval_config, 'smart_chunking', True)
                 
-                # NOTE: retrieve_relevant removed - retrieval module deleted
-                # Using all context files content as retrieved context for now
-                retrieved_context = ""
-                if context_files_content:
-                    # Simple fallback: use all context files
-                    retrieved_context = "\n\n".join([
-                        f"=== {path} ===\n{content}"
-                        for path, content in context_files_content.items()
-                    ])
-                    # Limit to max_context_tokens if specified
-                    if effective_max_context > 0:
-                        # Rough token estimation (4 chars per token)
-                        max_chars = effective_max_context * 4
-                        if len(retrieved_context) > max_chars:
-                            retrieved_context = retrieved_context[:max_chars]
-                            logger.warning("Truncated context to %d characters", max_chars)
+                # Use scenario-based retrieval to find most relevant file
+                scenario_id = scenario.get('id', '')
+                if scenario_id:
+                    try:
+                        from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
+                        
+                        # Get base path from config if available
+                        base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                        if not Path(base_path).is_absolute():
+                            # Make it absolute relative to workspace
+                            base_path = str(Path.cwd() / base_path)
+                        
+                        most_relevant_file = get_most_relevant_file_from_scenario(
+                            scenario_id,
+                            scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                            base_path=base_path
+                        )
+                        
+                        if most_relevant_file and Path(most_relevant_file).exists():
+                            # Read the most relevant file
+                            file_content = Path(most_relevant_file).read_text(encoding='utf-8', errors='ignore')
+                            retrieved_context = f"=== {most_relevant_file} ===\n{file_content}"
+                            
+                            # Limit to max_context_tokens if specified
+                            if effective_max_context > 0:
+                                # Rough token estimation (4 chars per token)
+                                max_chars = effective_max_context * 4
+                                if len(retrieved_context) > max_chars:
+                                    retrieved_context = retrieved_context[:max_chars]
+                                    logger.warning("Truncated context to %d characters", max_chars)
+                            
+                            logger.info("✅ Using most relevant file from scenario: %s", most_relevant_file)
+                        else:
+                            # Fallback: use all context files
+                            logger.warning("Most relevant file not found, falling back to all context files")
+                            retrieved_context = ""
+                            if context_files_content:
+                                retrieved_context = "\n\n".join([
+                                    f"=== {path} ===\n{content}"
+                                    for path, content in context_files_content.items()
+                                ])
+                                if effective_max_context > 0:
+                                    max_chars = effective_max_context * 4
+                                    if len(retrieved_context) > max_chars:
+                                        retrieved_context = retrieved_context[:max_chars]
+                    except Exception as e:
+                        logger.warning(f"Error using scenario-based retrieval: {e}, falling back to simple method")
+                        retrieved_context = ""
+                        if context_files_content:
+                            retrieved_context = "\n\n".join([
+                                f"=== {path} ===\n{content}"
+                                for path, content in context_files_content.items()
+                            ])
+                            if effective_max_context > 0:
+                                max_chars = effective_max_context * 4
+                                if len(retrieved_context) > max_chars:
+                                    retrieved_context = retrieved_context[:max_chars]
+                else:
+                    # No scenario ID, use simple fallback
+                    retrieved_context = ""
+                    if context_files_content:
+                        retrieved_context = "\n\n".join([
+                            f"=== {path} ===\n{content}"
+                            for path, content in context_files_content.items()
+                        ])
+                        if effective_max_context > 0:
+                            max_chars = effective_max_context * 4
+                            if len(retrieved_context) > max_chars:
+                                retrieved_context = retrieved_context[:max_chars]
 
                 if retrieved_context:
                     logger.info(
