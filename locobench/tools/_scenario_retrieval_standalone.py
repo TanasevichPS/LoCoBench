@@ -46,46 +46,29 @@ def get_most_relevant_file_from_scenario(
         
         project_name = None
         
-        # Strategy: Find where task_category starts
+        # Simple strategy: split on task category
         # Format: {project_name}_{task_category}_{difficulty}_{number}
         # Example: java_web_social_medium_073_architectural_understanding_expert_01
-        # Project name: java_web_social_medium_073
+        # Split on '_architectural_understanding' -> 'java_web_social_medium_073'
         
-        # First, try to find task category by checking from the end
-        # Check patterns like: ..._category_difficulty_number
         for category in task_categories:
-            category_parts = category.split('_')
-            # Check if scenario ends with category_difficulty_number
-            # parts[-len(category_parts)-2:-2] should match category_parts
-            if len(parts) >= len(category_parts) + 2:
-                # Check the slice before the last 2 elements (difficulty + number)
-                end_idx = -len(category_parts) - 2
-                if parts[end_idx:-2] == category_parts:
-                    project_name = '_'.join(parts[:end_idx])
-                    logger.debug(f"Found task category '{category}' at end (slice {end_idx}:-2), project_name: {project_name}")
-                    break
+            if f'_{category}' in scenario_id:
+                project_name = scenario_id.split(f'_{category}')[0]
+                logger.debug(f"Found task category '{category}', project_name: {project_name}")
+                break
         
-        # If not found, search for category followed by difficulty anywhere
+        # Fallback: try finding difficulty
         if not project_name:
-            for category in task_categories:
-                category_parts = category.split('_')
-                for i in range(len(parts) - len(category_parts)):
-                    if parts[i:i+len(category_parts)] == category_parts:
-                        # Check if followed by difficulty (makes it more likely to be correct)
-                        if i + len(category_parts) < len(parts) and parts[i + len(category_parts)] in difficulties:
-                            project_name = '_'.join(parts[:i])
-                            logger.debug(f"Found task category '{category}' at position {i}, project_name: {project_name}")
-                            break
-                if project_name:
+            for difficulty in difficulties:
+                if f'_{difficulty}' in scenario_id:
+                    # Find the last occurrence before the number
+                    parts_before_difficulty = scenario_id.rsplit(f'_{difficulty}', 1)[0]
+                    # Remove any trailing numbers/underscores
+                    project_name = parts_before_difficulty.rstrip('_0123456789')
+                    logger.debug(f"Found difficulty '{difficulty}', project_name: {project_name}")
                     break
         
-        if not project_name:
-            for i in range(len(parts) - 1, 0, -1):
-                if parts[i] in difficulties:
-                    project_name = '_'.join(parts[:i])
-                    logger.debug(f"Found difficulty '{parts[i]}' at position {i}, project_name: {project_name}")
-                    break
-        
+        # Last fallback: remove last 3 parts
         if not project_name and len(parts) >= 4:
             project_name = '_'.join(parts[:-3])
             logger.debug(f"Fallback: Using first {len(parts)-3} parts as project_name: {project_name}")
@@ -196,37 +179,24 @@ def get_context_files_from_scenario(
         
         project_name = None
         
-        # Strategy: Find where task_category starts
-        # First, try to find task category by checking from the end
+        # Simple strategy: split on task category
+        # Format: {project_name}_{task_category}_{difficulty}_{number}
         for category in task_categories:
-            category_parts = category.split('_')
-            if len(parts) >= len(category_parts) + 2:
-                end_idx = -len(category_parts) - 2
-                if parts[end_idx:-2] == category_parts:
-                    project_name = '_'.join(parts[:end_idx])
-                    logger.debug(f"Found task category '{category}' at end, project_name: {project_name}")
-                    break
+            if f'_{category}' in scenario_id:
+                project_name = scenario_id.split(f'_{category}')[0]
+                logger.debug(f"Found task category '{category}', project_name: {project_name}")
+                break
         
-        # If not found, search for category followed by difficulty
+        # Fallback: try finding difficulty
         if not project_name:
-            for category in task_categories:
-                category_parts = category.split('_')
-                for i in range(len(parts) - len(category_parts)):
-                    if parts[i:i+len(category_parts)] == category_parts:
-                        if i + len(category_parts) < len(parts) and parts[i + len(category_parts)] in difficulties:
-                            project_name = '_'.join(parts[:i])
-                            logger.debug(f"Found task category '{category}' at position {i}, project_name: {project_name}")
-                            break
-                if project_name:
+            for difficulty in difficulties:
+                if f'_{difficulty}' in scenario_id:
+                    parts_before_difficulty = scenario_id.rsplit(f'_{difficulty}', 1)[0]
+                    project_name = parts_before_difficulty.rstrip('_0123456789')
+                    logger.debug(f"Found difficulty '{difficulty}', project_name: {project_name}")
                     break
         
-        if not project_name:
-            for i in range(len(parts) - 1, 0, -1):
-                if parts[i] in difficulties:
-                    project_name = '_'.join(parts[:i])
-                    logger.debug(f"Found difficulty '{parts[i]}' at position {i}, project_name: {project_name}")
-                    break
-        
+        # Last fallback: remove last 3 parts
         if not project_name and len(parts) >= 4:
             project_name = '_'.join(parts[:-3])
             logger.debug(f"Fallback: Using first {len(parts)-3} parts as project_name: {project_name}")
