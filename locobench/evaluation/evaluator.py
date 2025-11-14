@@ -2311,10 +2311,19 @@ class LoCoBenchEvaluator:
                                 if scenario_id:
                                     try:
                                         from ..tools.scenario_retrieval import get_context_files_from_scenario
+                                        
+                                        # Build absolute path for scenarios directory
+                                        scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                                        if not scenarios_dir.is_absolute():
+                                            scenarios_dir = Path.cwd() / scenarios_dir
+                                        scenarios_dir = str(scenarios_dir.resolve())
+                                        
+                                        base_path_for_context = str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
+                                        
                                         scenario_context = get_context_files_from_scenario(
                                             scenario_id,
-                                            scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
-                                            base_path=str(Path(project_dir).parent) if Path(project_dir).parent.name == "generated" else str(Path(project_dir))
+                                            scenarios_dir=scenarios_dir,
+                                            base_path=base_path_for_context
                                         )
                                         if file_path in scenario_context:
                                             context_files_content[file_path] = scenario_context[file_path]
@@ -2415,17 +2424,31 @@ class LoCoBenchEvaluator:
                             from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
                             
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                            if not Path(base_path).is_absolute():
-                                base_path = str(Path.cwd() / base_path)
+                            base_path_obj = Path(base_path)
+                            if not base_path_obj.is_absolute():
+                                base_path = str((Path.cwd() / base_path).resolve())
+                            else:
+                                base_path = str(base_path_obj.resolve())
                             
                             mcp_base_url = getattr(retrieval_config, 'mcp_base_url', None) or getattr(self.config.api, 'custom_model_base_url', 'http://10.199.178.176:8080/v1')
                             mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
                             mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
                             
+                            # Build absolute path for scenarios directory
+                            output_dir = self.config.data.output_dir
+                            scenarios_dir_obj = Path(output_dir) / "scenarios"
+                            if not scenarios_dir_obj.is_absolute():
+                                scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
+                            else:
+                                scenarios_dir = str(scenarios_dir_obj.resolve())
+                            
+                            logger.debug(f"Using scenarios_dir: {scenarios_dir}")
+                            logger.debug(f"Using base_path: {base_path}")
+                            
                             most_relevant_file = get_most_relevant_file_with_mcp_agent(
                                 scenario_id,
                                 task_prompt_text,
-                                scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                scenarios_dir=scenarios_dir,
                                 base_path=base_path,
                                 mcp_base_url=mcp_base_url,
                                 mcp_api_key=mcp_api_key,
@@ -2437,13 +2460,28 @@ class LoCoBenchEvaluator:
                             
                             # Get base path from config if available
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
-                            if not Path(base_path).is_absolute():
-                                # Make it absolute relative to workspace
-                                base_path = str(Path.cwd() / base_path)
+                            base_path_obj = Path(base_path)
+                            if not base_path_obj.is_absolute():
+                                # Try to resolve relative to current working directory
+                                base_path = str((Path.cwd() / base_path).resolve())
+                            else:
+                                base_path = str(base_path_obj.resolve())
+                            
+                            # Build absolute path for scenarios directory
+                            output_dir = self.config.data.output_dir
+                            scenarios_dir_obj = Path(output_dir) / "scenarios"
+                            if not scenarios_dir_obj.is_absolute():
+                                # Try to resolve relative to current working directory
+                                scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
+                            else:
+                                scenarios_dir = str(scenarios_dir_obj.resolve())
+                            
+                            logger.debug(f"Using scenarios_dir: {scenarios_dir}")
+                            logger.debug(f"Using base_path: {base_path}")
                             
                             most_relevant_file = get_most_relevant_file_from_scenario(
                                 scenario_id,
-                                scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
+                                scenarios_dir=scenarios_dir,
                                 base_path=base_path
                             )
                         
@@ -2496,11 +2534,17 @@ class LoCoBenchEvaluator:
                                 if not Path(base_path).is_absolute():
                                     base_path = str(Path.cwd() / base_path)
                                 
-                                scenario_context = get_context_files_from_scenario(
-                                    scenario_id,
-                                    scenarios_dir=str(Path(self.config.data.output_dir) / "scenarios"),
-                                    base_path=base_path
-                                )
+                                        # Build absolute path for scenarios directory
+                                        scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
+                                        if not scenarios_dir.is_absolute():
+                                            scenarios_dir = Path.cwd() / scenarios_dir
+                                        scenarios_dir = str(scenarios_dir.resolve())
+                                        
+                                        scenario_context = get_context_files_from_scenario(
+                                            scenario_id,
+                                            scenarios_dir=scenarios_dir,
+                                            base_path=base_path
+                                        )
                                 if scenario_context:
                                     retrieved_context = "\n\n".join([
                                         f"=== {path} ===\n{content}"

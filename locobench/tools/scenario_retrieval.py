@@ -28,9 +28,16 @@ def get_most_relevant_file_from_scenario(
         # Import tool functions directly (avoid importing @tool decorators)
         # Read scenario file manually to avoid LangChain tool imports
         scenario_path = Path(scenarios_dir) / f"{scenario_id}.json"
+        # Resolve to absolute path
+        scenario_path = scenario_path.resolve()
+        
         if not scenario_path.exists():
             logger.error(f"Scenario file not found: {scenario_path}")
+            logger.debug(f"Looking for scenario in directory: {scenarios_dir}")
+            logger.debug(f"Scenario ID: {scenario_id}")
             return None
+        
+        logger.debug(f"Found scenario file: {scenario_path}")
         
         scenario_json = scenario_path.read_text(encoding='utf-8')
         scenario_data = json.loads(scenario_json)
@@ -159,9 +166,16 @@ def get_context_files_from_scenario(
     try:
         # Read scenario file manually (avoid LangChain tool imports)
         scenario_path = Path(scenarios_dir) / f"{scenario_id}.json"
+        # Resolve to absolute path
+        scenario_path = scenario_path.resolve()
+        
         if not scenario_path.exists():
             logger.error(f"Scenario file not found: {scenario_path}")
+            logger.debug(f"Looking for scenario in directory: {scenarios_dir}")
+            logger.debug(f"Scenario ID: {scenario_id}")
             return {}
+        
+        logger.debug(f"Found scenario file: {scenario_path}")
         
         scenario_json = scenario_path.read_text(encoding='utf-8')
         scenario_data = json.loads(scenario_json)
