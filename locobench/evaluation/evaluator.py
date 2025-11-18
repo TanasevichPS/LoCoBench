@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 import signal
 import sys
+from contextlib import contextmanager
 
 from rich.console import Console
 from rich.table import Table
@@ -203,6 +204,25 @@ class LoCoBenchEvaluator:
         console.print("   locobench evaluate --resume [other-options]", style="cyan")
         
         sys.exit(0)
+
+    @contextmanager
+    def _response_filter_override(self, task_category: str):
+        """Temporarily relax response filters for categories that need richer prose."""
+        response_filter = getattr(self.llm_generator, "response_filter", None)
+        if not response_filter:
+            yield
+            return
+        original_enforce = response_filter.config.enforce_code_only
+        original_reasoning = response_filter.config.strip_reasoning_tags
+        relax_categories = {'security_analysis', 'architectural_understanding'}
+        try:
+            if (task_category or '').lower() in relax_categories:
+                response_filter.config.enforce_code_only = False
+                response_filter.config.strip_reasoning_tags = False
+            yield
+        finally:
+            response_filter.config.enforce_code_only = original_enforce
+            response_filter.config.strip_reasoning_tags = original_reasoning
     
     def _save_checkpoint(self):
         """Save current evaluation state to checkpoint file"""
@@ -2180,7 +2200,56 @@ class LoCoBenchEvaluator:
         }
         
         config = language_configs.get(language, language_configs['python'])
-        file_examples = '\\n'.join([f'        "{filename}": "{content}"' for filename, content in config['files'].items()])
+        task_category = (scenario.get('task_category') or '').lower()
+        category_guidance = {
+            'feature_implementation': {
+                'instruction': "- Cover every requirement with concrete modules and state transitions\n"
+                               "- Provide smoke tests or self-check routines to exercise acceptance criteria\n"
+                               "- Document assumptions in the `approach` section before coding",
+                'files': {
+                    'services/feature_service.py': 'class FeatureService:\n    def execute(self, payload):\n        """Coordinate feature workflow."""\n        raise NotImplementedError',
+                    'tests/test_feature.py': 'import unittest\n\nclass FeatureTests(unittest.TestCase):\n    def test_feature_behavior(self):\n        self.fail("add assertions for acceptance criteria")'
+                }
+            },
+            'architectural_understanding': {
+                'instruction': "- Preserve existing layering (controllers → services → repositories) and explain any changes\n"
+                               "- Highlight dependency flow and shared contracts in `architecture/diagram.md`\n"
+                               "- Keep public interfaces backward compatible where possible",
+                'files': {
+                    'architecture/diagram.md': '# Architecture Outline\n\n- Layered overview\n- Key modules and interactions\n',
+                    'services/context_gateway.py': 'class ContextGateway:\n    """Adapter exposing legacy subsystem interactions."""\n    pass'
+                }
+            },
+            'security_analysis': {
+                'instruction': "- Enumerate threats and mitigations in `docs/threat_report.md`\n"
+                               "- Harden entry points with validation, authentication, and auditing hooks\n"
+                               "- Call out secrets/PII handling strategy explicitly",
+                'files': {
+                    'docs/threat_report.md': '# Threat Report\n\n## Findings\n- TODO\n\n## Recommended Fixes\n- TODO\n',
+                    'security/middleware.py': 'def validate_request(request):\n    """Apply validation and auth checks."""\n    raise NotImplementedError'
+                }
+            },
+            'code_comprehension': {
+                'instruction': "- Reference specific context files/line ranges to justify modifications\n"
+                               "- Add `docs/findings.md` summarizing discovered behaviors and next steps\n"
+                               "- Preserve existing naming/module boundaries unless instructed otherwise",
+                'files': {
+                    'docs/findings.md': '# Code Comprehension Findings\n\n- Source references\n- Behavior summary\n- Follow-up tasks\n',
+                    'notes/context_links.md': '- file_a.py:L120 - describe usage\n'
+                }
+            }
+        }
+        guidance = category_guidance.get(task_category, {})
+        category_instruction = guidance.get('instruction', '')
+        combined_files = dict(config['files'])
+        extra_files = guidance.get('files', {})
+        if extra_files:
+            combined_files.update(extra_files)
+        file_examples = '\n'.join([f'        "{filename}": "{content}"' for filename, content in combined_files.items()])
+        category_instruction_block = ""
+        if category_instruction:
+            pretty_category = task_category.replace('_', ' ').title() if task_category else "General"
+            category_instruction_block = f"**CATEGORY FOCUS ({pretty_category})**:\n{category_instruction}\n"
         
         # Handle multi-session task prompts properly
         task_prompt = scenario.get('task_prompt', '')
@@ -2827,7 +2896,7 @@ class LoCoBenchEvaluator:
 
 **DESCRIPTION**: {scenario.get('description', '')}
 
-**REQUIREMENTS**: 
+{category_instruction_block}**REQUIREMENTS**: 
 {formatted_requirements}
 
 {context_section}
@@ -2919,7 +2988,7 @@ Generate your response now:"""
 
 **DESCRIPTION**: {scenario.get('description', '')}
 
-**REQUIREMENTS**: 
+{category_instruction_block}**REQUIREMENTS**: 
 {formatted_requirements}
 
 {context_section}
@@ -3091,38 +3160,40 @@ Generate your response now:"""
         
         # Retry logic for empty responses
         max_retries = 3
+        task_category = (scenario.get('task_category') or '').lower()
         for attempt in range(max_retries):
             try:
                 logger.info("📊 Prompt length: %d chars", len(solution_prompt))
                 
                 # For evaluation, use the specific model name instead of default config
-                if model_key == 'openai':
-                    # Temporarily override the default model for this evaluation
-                    original_model = self.llm_generator.config.api.default_model_openai
-                    self.llm_generator.config.api.default_model_openai = model_name
-                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
-                    # Restore original model
-                    self.llm_generator.config.api.default_model_openai = original_model
-                elif model_key == 'google':
-                    # Temporarily override the default model for this evaluation  
-                    original_model = self.llm_generator.config.api.default_model_google
-                    self.llm_generator.config.api.default_model_google = model_name
-                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
-                    # Restore original model
-                    self.llm_generator.config.api.default_model_google = original_model
-                elif model_key == 'custom' or model_key.startswith('custom:'):
-                    target_display = None
-                    if ':' in model_key:
-                        target_display = model_key.split(':', 1)[1] or None
-                    if not target_display:
-                        target_display = self.llm_generator.config.api.custom_model_name or model_name
-                    logger.info(f"⚙️ Calling custom model: {target_display}")
-                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
-                elif '/' in model_key or model_key.startswith('huggingface:') or model_key.startswith('hf:'):
-                    # Hugging Face model - use directly
-                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
-                else:
-                    response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                with self._response_filter_override(task_category):
+                    if model_key == 'openai':
+                        # Temporarily override the default model for this evaluation
+                        original_model = self.llm_generator.config.api.default_model_openai
+                        self.llm_generator.config.api.default_model_openai = model_name
+                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                        # Restore original model
+                        self.llm_generator.config.api.default_model_openai = original_model
+                    elif model_key == 'google':
+                        # Temporarily override the default model for this evaluation  
+                        original_model = self.llm_generator.config.api.default_model_google
+                        self.llm_generator.config.api.default_model_google = model_name
+                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                        # Restore original model
+                        self.llm_generator.config.api.default_model_google = original_model
+                    elif model_key == 'custom' or model_key.startswith('custom:'):
+                        target_display = None
+                        if ':' in model_key:
+                            target_display = model_key.split(':', 1)[1] or None
+                        if not target_display:
+                            target_display = self.llm_generator.config.api.custom_model_name or model_name
+                        logger.info(f"⚙️ Calling custom model: {target_display}")
+                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                    elif '/' in model_key or model_key.startswith('huggingface:') or model_key.startswith('hf:'):
+                        # Hugging Face model - use directly
+                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                    else:
+                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
                 
                 # Validate response before parsing
                 if not response or len(response.strip()) < 50:
