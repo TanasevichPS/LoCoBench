@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass, field
 
+from ..utils.response_filters import ResponseFilterConfig
+
 
 @dataclass
 class APIConfig:
@@ -28,6 +30,7 @@ class APIConfig:
     custom_model_timeout: float = 600.0
     custom_model_client_timeout: float = 660.0
     disable_proxy: bool = False
+    response_filters: ResponseFilterConfig = field(default_factory=ResponseFilterConfig)
     
     # Rate limiting settings 
     max_requests_per_minute: int = 1000
@@ -298,8 +301,18 @@ class Config:
         if disable_proxy_env is not None:
             api_config['disable_proxy'] = disable_proxy_env.lower() in {'1', 'true', 'yes', 'on'}
         
+        response_filters_data = api_config.pop('response_filters', None)
+        if isinstance(response_filters_data, ResponseFilterConfig):
+            response_filters = response_filters_data
+        elif isinstance(response_filters_data, dict):
+            response_filters = ResponseFilterConfig(**response_filters_data)
+        else:
+            response_filters = ResponseFilterConfig()
+        
+        api_obj = APIConfig(**api_config, response_filters=response_filters)
+        
         return cls(
-            api=APIConfig(**api_config),
+            api=api_obj,
             data=DataConfig(**yaml_data.get('data', {})),
             phase1=Phase1Config(**yaml_data.get('phase1', {})),
             phase2=Phase2Config(**yaml_data.get('phase2', {})),
