@@ -675,6 +675,8 @@ class LoCoBenchEvaluator:
         """Internal evaluation method without timeout wrapper"""
         
         scenario_id = scenario.get('id', 'unknown')
+        formatted_requirements, _ = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
         
         try:
             # Generate solution with the model
