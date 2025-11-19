@@ -28,6 +28,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
+from ..tools import mcp_tools
 # from ..retrieval import retrieve_relevant, load_context_files_from_scenario  # Removed - retrieval module deleted
 
 logger = logging.getLogger(__name__)
@@ -2373,19 +2374,10 @@ class LoCoBenchEvaluator:
                     scenario_id = scenario.get('id', '')
                     if scenario_id:
                         try:
-                            # Try standalone version first (no LangChain deps)
-                            try:
-                                from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                            except (ImportError, AttributeError):
-                                from ..tools.scenario_retrieval import get_context_files_from_scenario
-                            
                             # Build absolute paths
                             # Try to find the generated directory
-                            # project_dir is like: data/generated/java_web_ecommerce_expert_000/CommerceSphereEnterpriseSuite
-                            # We need: data/generated (or absolute equivalent)
                             base_path_for_context = None
                             
-                            # Walk up from project_dir to find "generated" directory
                             current = project_dir_path
                             while current != current.parent:
                                 if current.name == "generated":
@@ -2393,7 +2385,6 @@ class LoCoBenchEvaluator:
                                     break
                                 current = current.parent
                             
-                            # If not found, use parent of project_dir
                             if not base_path_for_context:
                                 base_path_for_context = str(project_dir_path.parent)
                             
@@ -2415,23 +2406,20 @@ class LoCoBenchEvaluator:
                             logger.debug(f"  base_path: {base_path_for_context}")
                             logger.debug(f"  project_dir from scenario: {project_dir_path}")
                             
-                            scenario_context = get_context_files_from_scenario(
+                            scenario_context = mcp_tools.get_context_files_from_scenario(
                                 scenario_id,
                                 scenarios_dir=scenarios_dir,
                                 base_path=base_path_for_context
                             )
                             
                             if scenario_context:
-                                # Use context files from scenario
                                 context_files_content = scenario_context
                                 logger.info("📋 Loaded %d files from scenario file for retrieval", len(context_files_content))
                             else:
                                 logger.warning("No context files found in scenario file, trying direct file loading...")
                                 logger.debug(f"  Scenario file should be at: {Path(scenarios_dir) / f'{scenario_id}.json'}")
-                                # Don't raise, just fall through to direct loading
                         except Exception as e:
                             logger.debug(f"Could not load from scenario file: {e}, trying direct file loading...")
-                            # Fall through to direct file loading
                     
                     # If scenario loading failed or returned empty, try direct file loading
                     if not context_files_content:
@@ -2552,8 +2540,6 @@ class LoCoBenchEvaluator:
                         if use_mcp_agent:
                             # Use LangChain MCP agent for retrieval
                             try:
-                                from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
-                                
                                 base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
                                 base_path_obj = Path(base_path)
                                 if not base_path_obj.is_absolute():
@@ -2565,7 +2551,6 @@ class LoCoBenchEvaluator:
                                 mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
                                 mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
                                 
-                                # Build absolute path for scenarios directory
                                 output_dir = self.config.data.output_dir
                                 scenarios_dir_obj = Path(output_dir) / "scenarios"
                                 if not scenarios_dir_obj.is_absolute():
@@ -2576,7 +2561,7 @@ class LoCoBenchEvaluator:
                                 logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                                 logger.debug(f"Using base_path: {base_path}")
                                 
-                                most_relevant_file = get_most_relevant_file_with_mcp_agent(
+                                most_relevant_file = mcp_tools.get_most_relevant_file_with_mcp_agent(
                                     scenario_id,
                                     task_prompt_text,
                                     scenarios_dir=scenarios_dir,
@@ -2586,7 +2571,6 @@ class LoCoBenchEvaluator:
                                     mcp_model=mcp_model
                                 )
                             except Exception as agent_err:
-                                # If MCP agent fails (e.g., context overflow), fall back to direct retrieval
                                 error_str = str(agent_err)
                                 if "exceed" in error_str.lower() or "context" in error_str.lower() or "400" in error_str:
                                     logger.warning(f"MCP agent failed due to context overflow, falling back to direct retrieval: {agent_err}")
@@ -2596,32 +2580,16 @@ class LoCoBenchEvaluator:
                         
                         # Use direct tool-based retrieval (default, or fallback if agent failed/disabled)
                         if not use_mcp_agent or most_relevant_file is None:
-                            # Import with explicit error handling to avoid LangChain import issues
-                            # Try standalone version first (no LangChain deps)
-                            try:
-                                from ..tools._scenario_retrieval_standalone import get_most_relevant_file_from_scenario
-                            except (ImportError, AttributeError):
-                                # Fallback to regular version
-                                try:
-                                    from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
-                                except (ImportError, AttributeError) as import_err:
-                                    logger.warning(f"Could not import scenario_retrieval: {import_err}")
-                                    get_most_relevant_file_from_scenario = None
-                            
-                            # Get base path from config if available
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
                             base_path_obj = Path(base_path)
                             if not base_path_obj.is_absolute():
-                                # Try to resolve relative to current working directory
                                 base_path = str((Path.cwd() / base_path).resolve())
                             else:
                                 base_path = str(base_path_obj.resolve())
                             
-                            # Build absolute path for scenarios directory
                             output_dir = self.config.data.output_dir
                             scenarios_dir_obj = Path(output_dir) / "scenarios"
                             if not scenarios_dir_obj.is_absolute():
-                                # Try to resolve relative to current working directory
                                 scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
                             else:
                                 scenarios_dir = str(scenarios_dir_obj.resolve())
@@ -2629,12 +2597,11 @@ class LoCoBenchEvaluator:
                             logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                             logger.debug(f"Using base_path: {base_path}")
                             
-                            if get_most_relevant_file_from_scenario is not None:
-                                most_relevant_file = get_most_relevant_file_from_scenario(
-                                    scenario_id,
-                                    scenarios_dir=scenarios_dir,
-                                    base_path=base_path
-                                )
+                            most_relevant_file = mcp_tools.get_most_relevant_file_from_scenario(
+                                scenario_id,
+                                scenarios_dir=scenarios_dir,
+                                base_path=base_path
+                            )
                             # else: most_relevant_file is already None from agent failure
                         
                         if most_relevant_file and Path(most_relevant_file).exists():
@@ -2668,13 +2635,11 @@ class LoCoBenchEvaluator:
                                 # Try to load context files from scenario file as fallback
                                 logger.info("No context_files_content, trying to load from scenario file...")
                                 try:
-                                    # Try standalone version first (no LangChain deps)
-                                    try:
-                                        from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                    except (ImportError, AttributeError):
-                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                    
-                                    base_path_fallback = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                    base_path_fallback = getattr(
+                                        self.config.data,
+                                        'generated_dir',
+                                        '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated'
+                                    )
                                     base_path_obj = Path(base_path_fallback)
                                     if not base_path_obj.is_absolute():
                                         base_path_fallback = str((Path.cwd() / base_path_obj).resolve())
@@ -2687,9 +2652,13 @@ class LoCoBenchEvaluator:
                                     else:
                                         scenarios_dir_fallback = str(scenarios_dir_fallback.resolve())
                                     
-                                    logger.debug(f"Fallback: Loading context from scenario file, scenarios_dir={scenarios_dir_fallback}, base_path={base_path_fallback}")
+                                    logger.debug(
+                                        "Fallback: Loading context from scenario file, scenarios_dir=%s, base_path=%s",
+                                        scenarios_dir_fallback,
+                                        base_path_fallback,
+                                    )
                                     
-                                    scenario_context = get_context_files_from_scenario(
+                                    scenario_context = mcp_tools.get_context_files_from_scenario(
                                         scenario_id,
                                         scenarios_dir=scenarios_dir_fallback,
                                         base_path=base_path_fallback
@@ -2704,9 +2673,9 @@ class LoCoBenchEvaluator:
                                             max_chars = effective_max_context * 4
                                             if len(retrieved_context) > max_chars:
                                                 retrieved_context = retrieved_context[:max_chars]
-                                        logger.info(f"✅ Loaded {len(scenario_context)} context files from scenario file")
+                                        logger.info("✅ Loaded %d context files from scenario file", len(scenario_context))
                                     else:
-                                        logger.warning(f"⚠️ No context files found in scenario file for {scenario_id}")
+                                        logger.warning("⚠️ No context files found in scenario file for %s", scenario_id)
                                 except Exception as e3:
                                     logger.warning(f"Could not load context from scenario file fallback: {e3}")
                                     import traceback
@@ -2733,22 +2702,20 @@ class LoCoBenchEvaluator:
                         else:
                             # Last resort: try to get context files from scenario
                             try:
-                                # Try standalone version first (no LangChain deps)
-                                try:
-                                    from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                except (ImportError, AttributeError):
-                                    from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                base_path = getattr(
+                                    self.config.data,
+                                    'generated_dir',
+                                    '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated'
+                                )
                                 if not Path(base_path).is_absolute():
                                     base_path = str(Path.cwd() / base_path)
                                 
-                                # Build absolute path for scenarios directory
                                 scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
                                 if not scenarios_dir.is_absolute():
                                     scenarios_dir = Path.cwd() / scenarios_dir
                                 scenarios_dir = str(scenarios_dir.resolve())
                                 
-                                scenario_context = get_context_files_from_scenario(
+                                scenario_context = mcp_tools.get_context_files_from_scenario(
                                     scenario_id,
                                     scenarios_dir=scenarios_dir,
                                     base_path=base_path
@@ -2764,12 +2731,7 @@ class LoCoBenchEvaluator:
                                             retrieved_context = retrieved_context[:max_chars]
                                     logger.info("✅ Loaded context files from scenario file")
                             except Exception as e2:
-                                # Check if it's a LangChain import error
-                                error_str = str(e2)
-                                if "StructuredTool" in error_str or "langchain.tools" in error_str or "cannot import name" in error_str:
-                                    logger.debug(f"LangChain import error when loading scenario context (this is OK): {e2}")
-                                else:
-                                    logger.warning(f"Could not load context from scenario file: {e2}")
+                                logger.warning(f"Could not load context from scenario file: {e2}")
                 else:
                     # No scenario ID, use simple fallback
                     retrieved_context = ""
