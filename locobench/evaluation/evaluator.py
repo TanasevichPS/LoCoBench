@@ -3259,7 +3259,7 @@ Generate your response now:"""
         filtered = scenarios
         supported_languages = self.config.phase1.supported_languages
         
-        # Если используем RAG - не фильтруем по языку, иначе применяем фильтр
+        # If RAG is enabled we skip language filtering; otherwise we enforce it
         if supported_languages:
             filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
             logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
