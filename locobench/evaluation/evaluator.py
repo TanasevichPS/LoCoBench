@@ -82,7 +82,7 @@ class ModelEvaluationResult:
     code_files_generated: int
     total_lines_generated: int
     parsing_success: bool
-    prompt_length_chars: int = 0
+    prompt_length_chars: int
     
     # Solution code preservation
     solution_code: Dict[str, str]  # filename -> code content
@@ -543,7 +543,8 @@ class LoCoBenchEvaluator:
             'software_engineering_score': 0.0,
             'functional_correctness_score': 0.0,
             'code_quality_score': 0.0,
-            'longcontext_utilization_score': 0.0
+            'longcontext_utilization_score': 0.0,
+            'prompt_length_chars': 0,
         }
         
         for field, default_value in default_values.items():
