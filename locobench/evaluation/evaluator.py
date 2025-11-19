@@ -127,6 +127,7 @@ class LoCoBenchEvaluator:
         self.llm_generator = MultiLLMGenerator(config)
         self.results: List[ModelEvaluationResult] = []
         self.checkpoint: Optional[EvaluationCheckpoint] = None
+        self.gen_logger = logging.getLogger('locobench.generation')
         
         # Create intermediate_results directory if it doesn't exist
         intermediate_dir = Path("intermediate_results")
@@ -928,7 +929,9 @@ class LoCoBenchEvaluator:
                             if result_obj:
                                 model_results.append(result_obj)
                                 grade = self._get_letter_grade(result_obj.total_score)
-                                console.print(f"  ✅ {scenario_title}: {result_obj.total_score:.3f} ({grade}) [{scenario_time:.1f}s]")
+                                formatted_line = f"  ✅ {scenario_title}: {result_obj.total_score:.3f} ({grade}) [{scenario_time:.1f}s]"
+                                console.print(formatted_line)
+                                self.gen_logger.info(formatted_line)
                             else:
                                 failed_count += 1
                                 console.print(f"  ❌ {scenario_title}: Failed [{scenario_time:.1f}s]")

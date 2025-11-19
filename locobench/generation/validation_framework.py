@@ -151,6 +151,7 @@ class AutomatedValidator:
     def __init__(self, config: Config):
         self.config = config
         self.console = Console()
+        self.gen_logger = logging.getLogger('locobench.generation')
         
         # Output directories
         self.output_dir = Path(config.data.output_dir)
@@ -191,6 +192,7 @@ class AutomatedValidator:
         task_category = scenario['task_category']
         
         self.console.print(f"🧪 Generating test suite for: {scenario['title'][:50]}...")
+        self.gen_logger.info(f"🧪 Generating test suite for: {scenario['title']}")
         
         # Generate different types of tests based on task category
         compilation_tests = self._create_compilation_tests(scenario)
