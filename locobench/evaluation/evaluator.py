@@ -82,6 +82,7 @@ class ModelEvaluationResult:
     code_files_generated: int
     total_lines_generated: int
     parsing_success: bool
+    prompt_length_chars: int = 0
     
     # Solution code preservation
     solution_code: Dict[str, str]  # filename -> code content
@@ -146,6 +147,7 @@ class LoCoBenchEvaluator:
         self._interrupted = False
         self._start_time = None
         self._scenario_times = []
+        self.prompt_log_path = Path("logs/prompt_length_log.jsonl")
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_interrupt)
@@ -187,6 +189,47 @@ class LoCoBenchEvaluator:
         if len(self._scenario_times) > 0:
             avg_time = sum(self._scenario_times) / len(self._scenario_times)
             console.print(f"⚡ Avg per scenario: {avg_time:.1f}s")
+    
+    def _log_prompt_length_entry(self, scenario: Dict[str, Any], result: Optional[ModelEvaluationResult]) -> None:
+        """Persist prompt length diagnostics for each evaluated scenario."""
+        if not result:
+            return
+        
+        scenario_id = scenario.get('id', 'unknown') if isinstance(scenario, dict) else 'unknown'
+        scenario_title = scenario.get('title', 'Unknown') if isinstance(scenario, dict) else 'Unknown'
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "scenario_id": scenario_id,
+            "scenario_title": scenario_title,
+            "score": result.total_score,
+            "prompt_length_chars": result.prompt_length_chars,
+            "prompt_length_display": f"Prompt length: {result.prompt_length_chars} chars"
+        }
+        
+        try:
+            self.prompt_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.prompt_log_path.open('a', encoding='utf-8') as log_file:
+                json.dump(entry, log_file, ensure_ascii=False)
+                log_file.write("\n")
+        except Exception as exc:
+            logger.warning("Failed to log prompt length for scenario %s: %s", scenario_id, exc)
+    
+    def _prepare_task_prompt(self, scenario: Dict[str, Any]) -> Tuple[str, str]:
+        """Build formatted requirements block and retrieval text from scenario."""
+        task_prompt = scenario.get('task_prompt', '')
+        
+        if isinstance(task_prompt, dict):
+            session_requirements = []
+            for session_key in sorted(task_prompt.keys()):
+                session_content = task_prompt[session_key]
+                session_requirements.append(f"**{session_key.upper()}**: {session_content}")
+            formatted_requirements = '\n\n'.join(session_requirements)
+            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
+        else:
+            formatted_requirements = str(task_prompt)
+            task_prompt_text = formatted_requirements
+        
+        return formatted_requirements, task_prompt_text
     
     def _handle_interrupt(self, signum, frame):
         """Handle interrupt signals gracefully"""
@@ -513,8 +556,10 @@ class LoCoBenchEvaluator:
                                         failure_reason: str) -> ModelEvaluationResult:
         """Create a template response for scenarios that exceed retry limit"""
         from datetime import datetime
+        formatted_requirements, _ = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
         
-        return ModelEvaluationResult(
+        result = ModelEvaluationResult(
             model_name=model_name,
             scenario_id=scenario.get('id', 'unknown'),
             scenario_title=scenario.get('title', 'Unknown'),
@@ -532,6 +577,7 @@ class LoCoBenchEvaluator:
             code_files_generated=0,
             total_lines_generated=0,
             parsing_success=False,  # Mark as parsing failure
+            prompt_length_chars=prompt_length_chars,
             
             solution_code={},  # Empty solution
             generated_files=[],
@@ -544,6 +590,8 @@ class LoCoBenchEvaluator:
             },
             timestamp=datetime.now().isoformat()
         )
+        self._log_prompt_length_entry(scenario, result)
+        return result
 
     async def evaluate_model_on_scenario(self, model_name: str, scenario: Dict[str, Any]) -> Optional[ModelEvaluationResult]:
         """Evaluate a single model on a single scenario with timeout enforcement"""
@@ -636,7 +684,7 @@ class LoCoBenchEvaluator:
             if not solution_code:
                 logger.warning(f"Model {model_name} failed to parse solution for scenario {scenario_id}")
                 # Create a result with parsing failure
-                return ModelEvaluationResult(
+                result = ModelEvaluationResult(
                     model_name=model_name,
                     scenario_id=scenario_id,
                     scenario_title=scenario.get('title', 'Unknown'),
@@ -653,6 +701,7 @@ class LoCoBenchEvaluator:
                     code_files_generated=0,
                     total_lines_generated=0,
                     parsing_success=False,  # True parsing failure
+                    prompt_length_chars=prompt_length_chars,
                     
                     solution_code={},
                     generated_files=[],
@@ -660,6 +709,8 @@ class LoCoBenchEvaluator:
                     detailed_results={},
                     timestamp=datetime.now().isoformat()
                 )
+                self._log_prompt_length_entry(scenario, result)
+                return result
             
             # Sanitize solution_code to ensure all values are strings (fix for 79 failing multi-session scenarios)
             from ..generation.metric_algorithms import LoCoBenchMetricsCalculator
@@ -698,6 +749,7 @@ class LoCoBenchEvaluator:
                 code_files_generated=code_files_count,
                 total_lines_generated=total_lines,
                 parsing_success=parsing_success,
+                prompt_length_chars=prompt_length_chars,
                 
                 # Preserve solution code for qualitative analysis
                 solution_code=solution_code,  # Dict[str, str] of filename -> code
@@ -707,6 +759,7 @@ class LoCoBenchEvaluator:
                 timestamp=datetime.now().isoformat()
             )
             
+            self._log_prompt_length_entry(scenario, result)
             return result
             
         except Exception as e:
@@ -2252,22 +2305,8 @@ class LoCoBenchEvaluator:
             pretty_category = task_category.replace('_', ' ').title() if task_category else "General"
             category_instruction_block = f"**CATEGORY FOCUS ({pretty_category})**:\n{category_instruction}\n"
         
-        # Handle multi-session task prompts properly
-        task_prompt = scenario.get('task_prompt', '')
-        if isinstance(task_prompt, dict):
-            # Multi-session development scenario - combine all sessions
-            session_requirements = []
-            for session_key in sorted(task_prompt.keys()):
-                session_content = task_prompt[session_key]
-                session_requirements.append(f"**{session_key.upper()}**: {session_content}")
-            formatted_requirements = '\n\n'.join(session_requirements)
-            # For retrieval, use first session content as query
-            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
-        else:
-            # Regular scenario with string task_prompt
-            formatted_requirements = str(task_prompt)
-            task_prompt_text = str(task_prompt)
-        
+        formatted_requirements, task_prompt_text = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
 
 
         # Get difficulty and retrieval config
