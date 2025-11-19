@@ -167,6 +167,9 @@ def write_output(length_entries: List[LengthEntry], event_entries: List[Scenario
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as out_file:
         for entry in length_entries:
+            # Skip entries that lack both prompt and response lengths
+            if entry.prompt_length is None and entry.response_length is None:
+                continue
             out_file.write(entry.to_json() + "\n")
         for event in event_entries:
             out_file.write(event.to_json() + "\n")
