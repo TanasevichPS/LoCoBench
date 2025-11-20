@@ -3058,6 +3058,10 @@ Generate your response now:"""
             'gpt-5-mini': 'openai',
             'gpt-5-nano': 'openai',
             'gpt-5-chat-latest': 'openai',
+            # GPT-5 variants with "thinking" modifier (normalized)
+            'gpt-5thinking': 'openai',  # "gpt-5 thinking" -> "gpt-5"
+            'gpt-5thinking-mini': 'openai',  # "gpt-5 thinking mini" -> "gpt-5-mini"
+            'gpt-5thinkingmini': 'openai',  # "gpt-5 thinkingmini" -> "gpt-5-mini"
             'custom': 'custom',
             
             # GPT-4.1 series
@@ -3162,7 +3166,31 @@ Generate your response now:"""
             logger.warning(f"Model name is not a string: {type(model_name)} = {model_name}")
             model_name = str(model_name)
         
-        normalized_model_name = model_name.lower()
+        # Normalize model name: remove "thinking", "mini", etc. modifiers that might cause API issues
+        # The "thinking" modifier can trigger OpenAI's modifiers feature which requires a subscription
+        original_model_name = model_name
+        model_name_lower = model_name.lower()
+        
+        # Remove "thinking" modifier if present (this can cause subscription plan errors)
+        if "thinking" in model_name_lower:
+            # Remove "thinking" in various positions and formats
+            model_name = model_name.replace("Thinking", "").replace("thinking", "")
+            model_name = model_name.replace("THINKING", "").replace("THINKING", "")
+            # Clean up extra spaces
+            model_name = " ".join(model_name.split())
+            logger.info(f"🔄 Removed 'thinking' modifier from model name: '{original_model_name}' -> '{model_name}'")
+        
+        # Normalize spacing and format for matching
+        normalized_model_name = model_name.lower().strip()
+        
+        # Normalize common spacing patterns: "GPT-5 Mini" -> "gpt-5-mini"
+        normalized_model_name = normalized_model_name.replace(" ", "-")
+        # Handle multiple dashes
+        while "--" in normalized_model_name:
+            normalized_model_name = normalized_model_name.replace("--", "-")
+        
+        # Update model_name to normalized format for API calls
+        model_name = normalized_model_name
 
         if normalized_model_name.startswith('custom:'):
             model_key = model_name  # Preserve original casing for downstream logging
