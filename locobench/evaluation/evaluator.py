@@ -275,6 +275,9 @@ class LoCoBenchEvaluator:
             self.checkpoint.last_updated = datetime.now().isoformat()
             self.checkpoint.completed_count = sum(len(scenarios) for scenarios in self.checkpoint.completed_evaluations.values())
             
+            # Ensure parent directory exists before writing
+            self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+            
             with open(self.checkpoint_file, 'w') as f:
                 json.dump(asdict(self.checkpoint), f, indent=2)
             logger.info(f"💾 Checkpoint saved: {self.checkpoint.completed_count}/{self.checkpoint.total_scenarios} completed")
@@ -414,6 +417,9 @@ class LoCoBenchEvaluator:
             # Double-check the JSON is valid by parsing it back
             json.loads(result_json)  # This will raise exception if invalid
             
+            # Ensure parent directory exists before writing
+            incremental_file.parent.mkdir(parents=True, exist_ok=True)
+            
             # Append to file (thread-safe, atomic operation)
             with open(incremental_file, 'a', encoding='utf-8') as f:
                 f.write(result_json + '\n')
@@ -461,6 +467,9 @@ class LoCoBenchEvaluator:
                     import shutil
                     shutil.copy2(incremental_file, backup_file)
                     logger.info(f"Backed up old format to {backup_file}")
+                    
+                    # Ensure parent directory exists before writing
+                    incremental_file.parent.mkdir(parents=True, exist_ok=True)
                     
                     # Convert to JSONL
                     with open(incremental_file, 'w', encoding='utf-8') as f:
