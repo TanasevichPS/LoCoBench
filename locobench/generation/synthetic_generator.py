@@ -395,30 +395,42 @@ class MultiLLMGenerator:
                 if self.config.api.openai_timeout:
                     request_kwargs["timeout"] = self.config.api.openai_timeout
 
+                # Extract model name for detection (handle provider-prefixed models like "openai/gpt-5-mini")
+                model_name_for_detection = self.config.api.default_model_openai
+                if "/" in model_name_for_detection:
+                    # Extract model part after "/" for detection logic
+                    model_name_for_detection = model_name_for_detection.split("/", 1)[1]
+                
+                # Use the full model name (with provider prefix if present) for API calls
+                api_model_name = self.config.api.default_model_openai
+
                 # Handle different OpenAI models with appropriate token limits
-                if self.config.api.default_model_openai.startswith(("o1", "o3", "o4")):
+                if model_name_for_detection.startswith(("o1", "o3", "o4")):
                     self.logger.info(f"🔧 Using o-series format with max_completion_tokens=100000")
                     response = await self.openai_client.chat.completions.create(
-                        model=self.config.api.default_model_openai,
+                        model=api_model_name,
                         messages=messages,
                         max_completion_tokens=100000,  # o-series supports 100K+, maximizing for comprehensive generation
                         **request_kwargs
                     )
-                elif self.config.api.default_model_openai.startswith("gpt-5"):
+                elif model_name_for_detection.startswith("gpt-5"):
                     self.logger.info(f"🔧 Using GPT-5 format with max_completion_tokens=50000")
                     response = await self.openai_client.chat.completions.create(
-                        model=self.config.api.default_model_openai,
+                        model=api_model_name,
                         messages=messages,
                         max_completion_tokens=50000,  # GPT-5 series optimized generation limit
                         # Note: GPT-5 only supports default temperature (1.0), omitting temperature parameter
                         **request_kwargs
                     )
-                elif self.config.api.default_model_openai.startswith(("custom", "gpt-oss-120b")):
-                    target_model = self.config.api.default_model_openai
+                elif model_name_for_detection.startswith(("custom", "gpt-oss-120b")):
+                    target_model = api_model_name
                     if target_model.startswith("custom:"):
                         target_model = target_model.split(":", 1)[1] or self.config.api.custom_model_name or target_model
                     elif target_model == "custom":
                         target_model = self.config.api.custom_model_name or target_model
+                    elif "/" in target_model:
+                        # Handle provider-prefixed custom models
+                        target_model = target_model.split("/", 1)[1] if "/" in target_model else target_model
 
                     # Allow fallback if config specifies dedicated custom name
                     if target_model == "gpt-oss-120b" and self.config.api.custom_model_name:
@@ -433,25 +445,25 @@ class MultiLLMGenerator:
 
                     self.logger.info(f"🔧 Using custom format with max_tokens={max_tokens}")
                     response = await self.openai_client.chat.completions.create(
-                        model=target_model,
+                        model=api_model_name,  # Use full model name (may include provider prefix)
                         messages=messages,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         **custom_request_kwargs
                     )
-                elif self.config.api.default_model_openai.startswith(("gpt-4o", "gpt-4-turbo")):
+                elif model_name_for_detection.startswith(("gpt-4o", "gpt-4-turbo")):
                     self.logger.info(f"🔧 Using GPT-4o/turbo format with max_tokens=16384")
                     response = await self.openai_client.chat.completions.create(
-                        model=self.config.api.default_model_openai,
+                        model=api_model_name,
                         messages=messages,
                         max_tokens=16384,  # GPT-4o/turbo max limit
                         temperature=0.7,
                         **request_kwargs
                     )
-                elif self.config.api.default_model_openai.startswith("gpt-4"):
+                elif model_name_for_detection.startswith("gpt-4"):
                     self.logger.info(f"🔧 Using GPT-4 format with max_tokens=8192")  
                     response = await self.openai_client.chat.completions.create(
-                        model=self.config.api.default_model_openai,
+                        model=api_model_name,
                         messages=messages,
                         max_tokens=8192,  # GPT-4 standard limit
                         temperature=0.7,
@@ -460,7 +472,7 @@ class MultiLLMGenerator:
                 else:
                     self.logger.info(f"🔧 Using standard format with max_tokens=4096")
                     response = await self.openai_client.chat.completions.create(
-                        model=self.config.api.default_model_openai,
+                        model=api_model_name,
                         messages=messages,
                         max_tokens=4096,  # Conservative default
                         temperature=0.7,
@@ -718,6 +730,12 @@ class MultiLLMGenerator:
         if not HF_AVAILABLE:
             raise APIError("HuggingFace", "NOT_AVAILABLE", "transformers/torch not installed. Install with: pip install transformers torch")
         
+        # Ensure hf_models is initialized (safety check)
+        if not hasattr(self, 'hf_models'):
+            self.hf_models = {}
+        if not hasattr(self, 'hf_tokenizers'):
+            self.hf_tokenizers = {}
+        
         async def _make_hf_call():
             try:
                 # Lazy load model if not already loaded
@@ -833,12 +851,34 @@ class MultiLLMGenerator:
             elif model_type.startswith("claude-"):
                 # Support direct Claude model specification
                 return await self.generate_with_claude(prompt, model_type, system_prompt)
+            elif model_type.startswith("openai/"):
+                # OpenAI model with provider prefix (e.g., "openai/gpt-5-mini")
+                # IMPORTANT: Keep the full "openai/gpt-5-mini" format for API calls
+                # The API may require the provider prefix
+                # Temporarily override the OpenAI model with the full format
+                original_model = self.config.api.default_model_openai
+                try:
+                    # Use the full "openai/gpt-5-mini" format, not just "gpt-5-mini"
+                    self.config.api.default_model_openai = model_type
+                    return await self.generate_with_openai(prompt, system_prompt)
+                finally:
+                    self.config.api.default_model_openai = original_model
             elif model_type.startswith("huggingface:") or model_type.startswith("hf:"):
                 # Hugging Face model: format is "huggingface:model-name" or "hf:model-name"
                 model_name = model_type.split(":", 1)[1] if ":" in model_type else model_type
                 return await self.generate_with_huggingface(model_name, prompt, system_prompt)
             elif "/" in model_type and HF_AVAILABLE:
                 # Assume it's a Hugging Face model ID if it contains "/"
+                # But first check if it's a known OpenAI model pattern
+                model_lower = model_type.lower()
+                if any(pattern in model_lower for pattern in ["gpt-", "o1", "o3", "o4", "codex"]):
+                    # This looks like an OpenAI model, treat it as such
+                    original_model = self.config.api.default_model_openai
+                    try:
+                        self.config.api.default_model_openai = model_type
+                        return await self.generate_with_openai(prompt, system_prompt)
+                    finally:
+                        self.config.api.default_model_openai = original_model
                 return await self.generate_with_huggingface(model_type, prompt, system_prompt)
             else:
                 supported = "'openai', 'google', 'custom', 'claude', 'claude-sonnet-4', 'claude-opus-4', 'claude-sonnet-3.7'"
