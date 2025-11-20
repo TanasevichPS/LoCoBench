@@ -852,31 +852,31 @@ class LoCoBenchEvaluator:
             scenario_semaphore = asyncio.Semaphore(max_concurrent_scenarios)
             
             async def evaluate_scenario_with_semaphore(scenario_data):
-                """Wrapper to evaluate scenario with concurrency control and timeout handling"""
+                """Wrapper to evaluate scenario with concurrency control
+                
+                Note: Timeout handling is done in evaluate_model_on_scenario() to avoid 
+                nested timeouts that can cause hanging. Config-based timeouts are used there.
+                """
                 async with scenario_semaphore:
                     _, scenario = scenario_data
                     scenario_start = time.time()
                     
-                    # Set timeout based on model type (Claude gets longer timeout for long-context scenarios)
-                    timeout_seconds = 600 if 'claude' in model_name.lower() else 300  # 10min for Claude, 5min for others
+                    # Call evaluation without additional timeout wrapper
+                    # Timeouts are handled internally by evaluate_model_on_scenario using config values
+                    result = await self.evaluate_model_on_scenario(model_name, scenario)
+                    scenario_time = time.time() - scenario_start
+                    self._scenario_times.append(scenario_time)
                     
-                    try:
-                        # Apply timeout to individual scenario evaluation
-                        result = await asyncio.wait_for(
-                            self.evaluate_model_on_scenario(model_name, scenario),
-                            timeout=timeout_seconds
-                        )
-                        scenario_time = time.time() - scenario_start
-                        self._scenario_times.append(scenario_time)
-                        return result, scenario, scenario_time
-                        
-                    except asyncio.TimeoutError:
-                        scenario_time = time.time() - scenario_start
-                        self._scenario_times.append(scenario_time)
+                    # Log if scenario took unusually long (over configured timeout)
+                    is_multi_session = scenario.get('task_category') == 'multi_session_development'
+                    expected_timeout = (self.config.phase4.session_timeout if is_multi_session 
+                                       else self.config.phase4.task_timeout)
+                    
+                    if scenario_time > expected_timeout:
                         scenario_title = scenario.get('title', scenario.get('id', 'Unknown'))[:60]
-                        logger.warning(f"⏰ Scenario timeout after {scenario_time:.1f}s: {scenario_title}")
-                        # Return None to indicate timeout failure
-                        return None, scenario, scenario_time
+                        logger.warning(f"⏰ Scenario exceeded expected timeout ({scenario_time:.1f}s > {expected_timeout}s): {scenario_title}")
+                    
+                    return result, scenario, scenario_time
             
             with Progress(
                 SpinnerColumn(),

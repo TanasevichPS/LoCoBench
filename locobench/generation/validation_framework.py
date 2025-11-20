@@ -191,7 +191,7 @@ class AutomatedValidator:
         scenario_id = scenario['id']
         task_category = scenario['task_category']
         
-        self.console.print(f"🧪 Generating test suite for: {scenario['title'][:50]}...")
+        # Log only once to avoid duplicate output (logger already outputs to console)
         self.gen_logger.info(f"🧪 Generating test suite for: {scenario['title']}")
         
         # Generate different types of tests based on task category
