@@ -3166,39 +3166,82 @@ Generate your response now:"""
             logger.warning(f"Model name is not a string: {type(model_name)} = {model_name}")
             model_name = str(model_name)
         
-        # Normalize model name: remove "thinking", "mini", etc. modifiers that might cause API issues
-        # The "thinking" modifier can trigger OpenAI's modifiers feature which requires a subscription
+        # Preserve provider-prefixed model names (e.g., "openai/gpt-5-mini") - don't normalize these
+        # The API may require the full "provider/model" format
+        has_provider_prefix = "/" in model_name and not model_name.startswith("custom:")
         original_model_name = model_name
-        model_name_lower = model_name.lower()
         
-        # Remove "thinking" modifier if present (this can cause subscription plan errors)
-        if "thinking" in model_name_lower:
-            # Remove "thinking" in various positions and formats
-            model_name = model_name.replace("Thinking", "").replace("thinking", "")
-            model_name = model_name.replace("THINKING", "").replace("THINKING", "")
-            # Clean up extra spaces
-            model_name = " ".join(model_name.split())
-            logger.info(f"🔄 Removed 'thinking' modifier from model name: '{original_model_name}' -> '{model_name}'")
+        if has_provider_prefix:
+            # For provider-prefixed models, only normalize the model part after the "/"
+            parts = model_name.split("/", 1)
+            if len(parts) == 2:
+                provider, model_part = parts
+                model_part_lower = model_part.lower()
+                
+                # Remove "thinking" modifier if present (this can cause subscription plan errors)
+                if "thinking" in model_part_lower:
+                    model_part = model_part.replace("Thinking", "").replace("thinking", "")
+                    model_part = model_part.replace("THINKING", "")
+                    model_part = " ".join(model_part.split())
+                    logger.info(f"🔄 Removed 'thinking' modifier from model part: '{model_part}'")
+                
+                # Normalize spacing in model part
+                model_part_normalized = model_part.lower().strip().replace(" ", "-")
+                while "--" in model_part_normalized:
+                    model_part_normalized = model_part_normalized.replace("--", "-")
+                
+                # Reconstruct with provider prefix preserved
+                model_name = f"{provider}/{model_part_normalized}"
+                if model_name != original_model_name:
+                    logger.info(f"🔄 Normalized provider-prefixed model: '{original_model_name}' -> '{model_name}'")
+        else:
+            # Normalize model name: remove "thinking", "mini", etc. modifiers that might cause API issues
+            # The "thinking" modifier can trigger OpenAI's modifiers feature which requires a subscription
+            model_name_lower = model_name.lower()
+            
+            # Remove "thinking" modifier if present (this can cause subscription plan errors)
+            if "thinking" in model_name_lower:
+                # Remove "thinking" in various positions and formats
+                model_name = model_name.replace("Thinking", "").replace("thinking", "")
+                model_name = model_name.replace("THINKING", "").replace("THINKING", "")
+                # Clean up extra spaces
+                model_name = " ".join(model_name.split())
+                logger.info(f"🔄 Removed 'thinking' modifier from model name: '{original_model_name}' -> '{model_name}'")
+            
+            # Normalize spacing and format for matching
+            normalized_model_name = model_name.lower().strip()
+            
+            # Normalize common spacing patterns: "GPT-5 Mini" -> "gpt-5-mini"
+            normalized_model_name = normalized_model_name.replace(" ", "-")
+            # Handle multiple dashes
+            while "--" in normalized_model_name:
+                normalized_model_name = normalized_model_name.replace("--", "-")
+            
+            # Update model_name to normalized format for API calls
+            model_name = normalized_model_name
         
-        # Normalize spacing and format for matching
+        # For model key mapping, use normalized version without provider prefix
         normalized_model_name = model_name.lower().strip()
-        
-        # Normalize common spacing patterns: "GPT-5 Mini" -> "gpt-5-mini"
-        normalized_model_name = normalized_model_name.replace(" ", "-")
-        # Handle multiple dashes
-        while "--" in normalized_model_name:
-            normalized_model_name = normalized_model_name.replace("--", "-")
-        
-        # Update model_name to normalized format for API calls
-        model_name = normalized_model_name
+        if "/" in normalized_model_name:
+            # Extract just the model part for mapping lookup
+            normalized_model_name = normalized_model_name.split("/", 1)[1]
 
         if normalized_model_name.startswith('custom:'):
             model_key = model_name  # Preserve original casing for downstream logging
         elif normalized_model_name == 'custom':
             model_key = 'custom'
-        elif '/' in model_name and normalized_model_name not in model_key_mapping:
-            # Treat as Hugging Face model directly
-            model_key = model_name
+        elif '/' in model_name:
+            # Check if it's a provider-prefixed model (e.g., "openai/gpt-5-mini")
+            provider_part = model_name.split("/", 1)[0].lower()
+            if provider_part == 'openai':
+                # For OpenAI provider-prefixed models, use the full format
+                model_key = 'openai'  # Use 'openai' as the generator type
+                # Keep model_name as "openai/gpt-5-mini" for API calls
+            elif normalized_model_name not in model_key_mapping:
+                # Treat as Hugging Face model directly
+                model_key = model_name
+            else:
+                model_key = model_key_mapping.get(normalized_model_name, 'openai')
         else:
             model_key = model_key_mapping.get(normalized_model_name, 'openai')
         
@@ -3212,12 +3255,17 @@ Generate your response now:"""
                 # For evaluation, use the specific model name instead of default config
                 with self._response_filter_override(task_category):
                     if model_key == 'openai':
-                        # Temporarily override the default model for this evaluation
-                        original_model = self.llm_generator.config.api.default_model_openai
-                        self.llm_generator.config.api.default_model_openai = model_name
-                        response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
-                        # Restore original model
-                        self.llm_generator.config.api.default_model_openai = original_model
+                        # Check if model_name has provider prefix (e.g., "openai/gpt-5-mini")
+                        if '/' in model_name and model_name.lower().startswith('openai/'):
+                            # Pass the full "openai/gpt-5-mini" format to the generator
+                            response = await self.llm_generator.generate_with_model(model_name, solution_prompt)
+                        else:
+                            # Temporarily override the default model for this evaluation
+                            original_model = self.llm_generator.config.api.default_model_openai
+                            self.llm_generator.config.api.default_model_openai = model_name
+                            response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
+                            # Restore original model
+                            self.llm_generator.config.api.default_model_openai = original_model
                     elif model_key == 'google':
                         # Temporarily override the default model for this evaluation  
                         original_model = self.llm_generator.config.api.default_model_google
