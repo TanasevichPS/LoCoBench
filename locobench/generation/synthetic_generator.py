@@ -718,6 +718,12 @@ class MultiLLMGenerator:
         if not HF_AVAILABLE:
             raise APIError("HuggingFace", "NOT_AVAILABLE", "transformers/torch not installed. Install with: pip install transformers torch")
         
+        # Ensure hf_models is initialized (safety check)
+        if not hasattr(self, 'hf_models'):
+            self.hf_models = {}
+        if not hasattr(self, 'hf_tokenizers'):
+            self.hf_tokenizers = {}
+        
         async def _make_hf_call():
             try:
                 # Lazy load model if not already loaded
@@ -833,12 +839,33 @@ class MultiLLMGenerator:
             elif model_type.startswith("claude-"):
                 # Support direct Claude model specification
                 return await self.generate_with_claude(prompt, model_type, system_prompt)
+            elif model_type.startswith("openai/"):
+                # OpenAI model with provider prefix (e.g., "openai/gpt-5-mini")
+                # Extract the model name and use OpenAI generator
+                model_name = model_type.split("/", 1)[1] if "/" in model_type else model_type
+                # Temporarily override the OpenAI model
+                original_model = self.config.api.default_model_openai
+                try:
+                    self.config.api.default_model_openai = model_name
+                    return await self.generate_with_openai(prompt, system_prompt)
+                finally:
+                    self.config.api.default_model_openai = original_model
             elif model_type.startswith("huggingface:") or model_type.startswith("hf:"):
                 # Hugging Face model: format is "huggingface:model-name" or "hf:model-name"
                 model_name = model_type.split(":", 1)[1] if ":" in model_type else model_type
                 return await self.generate_with_huggingface(model_name, prompt, system_prompt)
             elif "/" in model_type and HF_AVAILABLE:
                 # Assume it's a Hugging Face model ID if it contains "/"
+                # But first check if it's a known OpenAI model pattern
+                model_lower = model_type.lower()
+                if any(pattern in model_lower for pattern in ["gpt-", "o1", "o3", "o4", "codex"]):
+                    # This looks like an OpenAI model, treat it as such
+                    original_model = self.config.api.default_model_openai
+                    try:
+                        self.config.api.default_model_openai = model_type
+                        return await self.generate_with_openai(prompt, system_prompt)
+                    finally:
+                        self.config.api.default_model_openai = original_model
                 return await self.generate_with_huggingface(model_type, prompt, system_prompt)
             else:
                 supported = "'openai', 'google', 'custom', 'claude', 'claude-sonnet-4', 'claude-opus-4', 'claude-sonnet-3.7'"
