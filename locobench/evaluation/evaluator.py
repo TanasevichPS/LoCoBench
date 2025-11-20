@@ -28,6 +28,7 @@ from ..core.task import TaskCategory, DifficultyLevel
 from ..generation.validation_framework import AutomatedValidator, ValidationResult
 from ..generation.synthetic_generator import MultiLLMGenerator
 from ..utils.llm_parsing import parse_llm_response
+from ..tools import mcp_tools
 # from ..retrieval import retrieve_relevant, load_context_files_from_scenario  # Removed - retrieval module deleted
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class ModelEvaluationResult:
     code_files_generated: int
     total_lines_generated: int
     parsing_success: bool
+    prompt_length_chars: int
     
     # Solution code preservation
     solution_code: Dict[str, str]  # filename -> code content
@@ -125,6 +127,7 @@ class LoCoBenchEvaluator:
         self.llm_generator = MultiLLMGenerator(config)
         self.results: List[ModelEvaluationResult] = []
         self.checkpoint: Optional[EvaluationCheckpoint] = None
+        self.gen_logger = logging.getLogger('locobench.generation')
         
         # Create intermediate_results directory if it doesn't exist
         intermediate_dir = Path("intermediate_results")
@@ -145,6 +148,7 @@ class LoCoBenchEvaluator:
         self._interrupted = False
         self._start_time = None
         self._scenario_times = []
+        self.prompt_log_path = Path("logs/prompt_length_log.jsonl")
         
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_interrupt)
@@ -186,6 +190,47 @@ class LoCoBenchEvaluator:
         if len(self._scenario_times) > 0:
             avg_time = sum(self._scenario_times) / len(self._scenario_times)
             console.print(f"⚡ Avg per scenario: {avg_time:.1f}s")
+    
+    def _log_prompt_length_entry(self, scenario: Dict[str, Any], result: Optional[ModelEvaluationResult]) -> None:
+        """Persist prompt length diagnostics for each evaluated scenario."""
+        if not result:
+            return
+        
+        scenario_id = scenario.get('id', 'unknown') if isinstance(scenario, dict) else 'unknown'
+        scenario_title = scenario.get('title', 'Unknown') if isinstance(scenario, dict) else 'Unknown'
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "scenario_id": scenario_id,
+            "scenario_title": scenario_title,
+            "score": result.total_score,
+            "prompt_length_chars": result.prompt_length_chars,
+            "prompt_length_display": f"Prompt length: {result.prompt_length_chars} chars"
+        }
+        
+        try:
+            self.prompt_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.prompt_log_path.open('a', encoding='utf-8') as log_file:
+                json.dump(entry, log_file, ensure_ascii=False)
+                log_file.write("\n")
+        except Exception as exc:
+            logger.warning("Failed to log prompt length for scenario %s: %s", scenario_id, exc)
+    
+    def _prepare_task_prompt(self, scenario: Dict[str, Any]) -> Tuple[str, str]:
+        """Build formatted requirements block and retrieval text from scenario."""
+        task_prompt = scenario.get('task_prompt', '')
+        
+        if isinstance(task_prompt, dict):
+            session_requirements = []
+            for session_key in sorted(task_prompt.keys()):
+                session_content = task_prompt[session_key]
+                session_requirements.append(f"**{session_key.upper()}**: {session_content}")
+            formatted_requirements = '\n\n'.join(session_requirements)
+            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
+        else:
+            formatted_requirements = str(task_prompt)
+            task_prompt_text = formatted_requirements
+        
+        return formatted_requirements, task_prompt_text
     
     def _handle_interrupt(self, signum, frame):
         """Handle interrupt signals gracefully"""
@@ -499,7 +544,8 @@ class LoCoBenchEvaluator:
             'software_engineering_score': 0.0,
             'functional_correctness_score': 0.0,
             'code_quality_score': 0.0,
-            'longcontext_utilization_score': 0.0
+            'longcontext_utilization_score': 0.0,
+            'prompt_length_chars': 0,
         }
         
         for field, default_value in default_values.items():
@@ -512,8 +558,10 @@ class LoCoBenchEvaluator:
                                         failure_reason: str) -> ModelEvaluationResult:
         """Create a template response for scenarios that exceed retry limit"""
         from datetime import datetime
+        formatted_requirements, _ = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
         
-        return ModelEvaluationResult(
+        result = ModelEvaluationResult(
             model_name=model_name,
             scenario_id=scenario.get('id', 'unknown'),
             scenario_title=scenario.get('title', 'Unknown'),
@@ -531,6 +579,7 @@ class LoCoBenchEvaluator:
             code_files_generated=0,
             total_lines_generated=0,
             parsing_success=False,  # Mark as parsing failure
+            prompt_length_chars=prompt_length_chars,
             
             solution_code={},  # Empty solution
             generated_files=[],
@@ -543,6 +592,8 @@ class LoCoBenchEvaluator:
             },
             timestamp=datetime.now().isoformat()
         )
+        self._log_prompt_length_entry(scenario, result)
+        return result
 
     async def evaluate_model_on_scenario(self, model_name: str, scenario: Dict[str, Any]) -> Optional[ModelEvaluationResult]:
         """Evaluate a single model on a single scenario with timeout enforcement"""
@@ -625,6 +676,8 @@ class LoCoBenchEvaluator:
         """Internal evaluation method without timeout wrapper"""
         
         scenario_id = scenario.get('id', 'unknown')
+        formatted_requirements, _ = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
         
         try:
             # Generate solution with the model
@@ -635,7 +688,7 @@ class LoCoBenchEvaluator:
             if not solution_code:
                 logger.warning(f"Model {model_name} failed to parse solution for scenario {scenario_id}")
                 # Create a result with parsing failure
-                return ModelEvaluationResult(
+                result = ModelEvaluationResult(
                     model_name=model_name,
                     scenario_id=scenario_id,
                     scenario_title=scenario.get('title', 'Unknown'),
@@ -652,6 +705,7 @@ class LoCoBenchEvaluator:
                     code_files_generated=0,
                     total_lines_generated=0,
                     parsing_success=False,  # True parsing failure
+                    prompt_length_chars=prompt_length_chars,
                     
                     solution_code={},
                     generated_files=[],
@@ -659,6 +713,8 @@ class LoCoBenchEvaluator:
                     detailed_results={},
                     timestamp=datetime.now().isoformat()
                 )
+                self._log_prompt_length_entry(scenario, result)
+                return result
             
             # Sanitize solution_code to ensure all values are strings (fix for 79 failing multi-session scenarios)
             from ..generation.metric_algorithms import LoCoBenchMetricsCalculator
@@ -697,6 +753,7 @@ class LoCoBenchEvaluator:
                 code_files_generated=code_files_count,
                 total_lines_generated=total_lines,
                 parsing_success=parsing_success,
+                prompt_length_chars=prompt_length_chars,
                 
                 # Preserve solution code for qualitative analysis
                 solution_code=solution_code,  # Dict[str, str] of filename -> code
@@ -706,6 +763,7 @@ class LoCoBenchEvaluator:
                 timestamp=datetime.now().isoformat()
             )
             
+            self._log_prompt_length_entry(scenario, result)
             return result
             
         except Exception as e:
@@ -871,7 +929,9 @@ class LoCoBenchEvaluator:
                             if result_obj:
                                 model_results.append(result_obj)
                                 grade = self._get_letter_grade(result_obj.total_score)
-                                console.print(f"  ✅ {scenario_title}: {result_obj.total_score:.3f} ({grade}) [{scenario_time:.1f}s]")
+                                formatted_line = f"  ✅ {scenario_title}: {result_obj.total_score:.3f} ({grade}) [{scenario_time:.1f}s]"
+                                console.print(formatted_line)
+                                self.gen_logger.info(formatted_line)
                             else:
                                 failed_count += 1
                                 console.print(f"  ❌ {scenario_title}: Failed [{scenario_time:.1f}s]")
@@ -2251,22 +2311,8 @@ class LoCoBenchEvaluator:
             pretty_category = task_category.replace('_', ' ').title() if task_category else "General"
             category_instruction_block = f"**CATEGORY FOCUS ({pretty_category})**:\n{category_instruction}\n"
         
-        # Handle multi-session task prompts properly
-        task_prompt = scenario.get('task_prompt', '')
-        if isinstance(task_prompt, dict):
-            # Multi-session development scenario - combine all sessions
-            session_requirements = []
-            for session_key in sorted(task_prompt.keys()):
-                session_content = task_prompt[session_key]
-                session_requirements.append(f"**{session_key.upper()}**: {session_content}")
-            formatted_requirements = '\n\n'.join(session_requirements)
-            # For retrieval, use first session content as query
-            task_prompt_text = session_requirements[0] if session_requirements else str(task_prompt)
-        else:
-            # Regular scenario with string task_prompt
-            formatted_requirements = str(task_prompt)
-            task_prompt_text = str(task_prompt)
-        
+        formatted_requirements, task_prompt_text = self._prepare_task_prompt(scenario)
+        prompt_length_chars = len(formatted_requirements or "")
 
 
         # Get difficulty and retrieval config
@@ -2373,19 +2419,10 @@ class LoCoBenchEvaluator:
                     scenario_id = scenario.get('id', '')
                     if scenario_id:
                         try:
-                            # Try standalone version first (no LangChain deps)
-                            try:
-                                from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                            except (ImportError, AttributeError):
-                                from ..tools.scenario_retrieval import get_context_files_from_scenario
-                            
                             # Build absolute paths
                             # Try to find the generated directory
-                            # project_dir is like: data/generated/java_web_ecommerce_expert_000/CommerceSphereEnterpriseSuite
-                            # We need: data/generated (or absolute equivalent)
                             base_path_for_context = None
                             
-                            # Walk up from project_dir to find "generated" directory
                             current = project_dir_path
                             while current != current.parent:
                                 if current.name == "generated":
@@ -2393,7 +2430,6 @@ class LoCoBenchEvaluator:
                                     break
                                 current = current.parent
                             
-                            # If not found, use parent of project_dir
                             if not base_path_for_context:
                                 base_path_for_context = str(project_dir_path.parent)
                             
@@ -2415,23 +2451,20 @@ class LoCoBenchEvaluator:
                             logger.debug(f"  base_path: {base_path_for_context}")
                             logger.debug(f"  project_dir from scenario: {project_dir_path}")
                             
-                            scenario_context = get_context_files_from_scenario(
+                            scenario_context = mcp_tools.get_context_files_from_scenario(
                                 scenario_id,
                                 scenarios_dir=scenarios_dir,
                                 base_path=base_path_for_context
                             )
                             
                             if scenario_context:
-                                # Use context files from scenario
                                 context_files_content = scenario_context
                                 logger.info("📋 Loaded %d files from scenario file for retrieval", len(context_files_content))
                             else:
                                 logger.warning("No context files found in scenario file, trying direct file loading...")
                                 logger.debug(f"  Scenario file should be at: {Path(scenarios_dir) / f'{scenario_id}.json'}")
-                                # Don't raise, just fall through to direct loading
                         except Exception as e:
                             logger.debug(f"Could not load from scenario file: {e}, trying direct file loading...")
-                            # Fall through to direct file loading
                     
                     # If scenario loading failed or returned empty, try direct file loading
                     if not context_files_content:
@@ -2552,8 +2585,6 @@ class LoCoBenchEvaluator:
                         if use_mcp_agent:
                             # Use LangChain MCP agent for retrieval
                             try:
-                                from ..tools.mcp_agent_retrieval import get_most_relevant_file_with_mcp_agent
-                                
                                 base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
                                 base_path_obj = Path(base_path)
                                 if not base_path_obj.is_absolute():
@@ -2565,7 +2596,6 @@ class LoCoBenchEvaluator:
                                 mcp_api_key = getattr(retrieval_config, 'mcp_api_key', None) or getattr(self.config.api, 'custom_model_api_key', '111')
                                 mcp_model = getattr(retrieval_config, 'mcp_model', None) or getattr(self.config.api, 'custom_model_name', 'gpt-oss')
                                 
-                                # Build absolute path for scenarios directory
                                 output_dir = self.config.data.output_dir
                                 scenarios_dir_obj = Path(output_dir) / "scenarios"
                                 if not scenarios_dir_obj.is_absolute():
@@ -2576,7 +2606,7 @@ class LoCoBenchEvaluator:
                                 logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                                 logger.debug(f"Using base_path: {base_path}")
                                 
-                                most_relevant_file = get_most_relevant_file_with_mcp_agent(
+                                most_relevant_file = mcp_tools.get_most_relevant_file_with_mcp_agent(
                                     scenario_id,
                                     task_prompt_text,
                                     scenarios_dir=scenarios_dir,
@@ -2586,7 +2616,6 @@ class LoCoBenchEvaluator:
                                     mcp_model=mcp_model
                                 )
                             except Exception as agent_err:
-                                # If MCP agent fails (e.g., context overflow), fall back to direct retrieval
                                 error_str = str(agent_err)
                                 if "exceed" in error_str.lower() or "context" in error_str.lower() or "400" in error_str:
                                     logger.warning(f"MCP agent failed due to context overflow, falling back to direct retrieval: {agent_err}")
@@ -2596,32 +2625,16 @@ class LoCoBenchEvaluator:
                         
                         # Use direct tool-based retrieval (default, or fallback if agent failed/disabled)
                         if not use_mcp_agent or most_relevant_file is None:
-                            # Import with explicit error handling to avoid LangChain import issues
-                            # Try standalone version first (no LangChain deps)
-                            try:
-                                from ..tools._scenario_retrieval_standalone import get_most_relevant_file_from_scenario
-                            except (ImportError, AttributeError):
-                                # Fallback to regular version
-                                try:
-                                    from ..tools.scenario_retrieval import get_most_relevant_file_from_scenario
-                                except (ImportError, AttributeError) as import_err:
-                                    logger.warning(f"Could not import scenario_retrieval: {import_err}")
-                                    get_most_relevant_file_from_scenario = None
-                            
-                            # Get base path from config if available
                             base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
                             base_path_obj = Path(base_path)
                             if not base_path_obj.is_absolute():
-                                # Try to resolve relative to current working directory
                                 base_path = str((Path.cwd() / base_path).resolve())
                             else:
                                 base_path = str(base_path_obj.resolve())
                             
-                            # Build absolute path for scenarios directory
                             output_dir = self.config.data.output_dir
                             scenarios_dir_obj = Path(output_dir) / "scenarios"
                             if not scenarios_dir_obj.is_absolute():
-                                # Try to resolve relative to current working directory
                                 scenarios_dir = str((Path.cwd() / scenarios_dir_obj).resolve())
                             else:
                                 scenarios_dir = str(scenarios_dir_obj.resolve())
@@ -2629,12 +2642,11 @@ class LoCoBenchEvaluator:
                             logger.debug(f"Using scenarios_dir: {scenarios_dir}")
                             logger.debug(f"Using base_path: {base_path}")
                             
-                            if get_most_relevant_file_from_scenario is not None:
-                                most_relevant_file = get_most_relevant_file_from_scenario(
-                                    scenario_id,
-                                    scenarios_dir=scenarios_dir,
-                                    base_path=base_path
-                                )
+                            most_relevant_file = mcp_tools.get_most_relevant_file_from_scenario(
+                                scenario_id,
+                                scenarios_dir=scenarios_dir,
+                                base_path=base_path
+                            )
                             # else: most_relevant_file is already None from agent failure
                         
                         if most_relevant_file and Path(most_relevant_file).exists():
@@ -2668,13 +2680,11 @@ class LoCoBenchEvaluator:
                                 # Try to load context files from scenario file as fallback
                                 logger.info("No context_files_content, trying to load from scenario file...")
                                 try:
-                                    # Try standalone version first (no LangChain deps)
-                                    try:
-                                        from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                    except (ImportError, AttributeError):
-                                        from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                    
-                                    base_path_fallback = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                    base_path_fallback = getattr(
+                                        self.config.data,
+                                        'generated_dir',
+                                        '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated'
+                                    )
                                     base_path_obj = Path(base_path_fallback)
                                     if not base_path_obj.is_absolute():
                                         base_path_fallback = str((Path.cwd() / base_path_obj).resolve())
@@ -2687,9 +2697,13 @@ class LoCoBenchEvaluator:
                                     else:
                                         scenarios_dir_fallback = str(scenarios_dir_fallback.resolve())
                                     
-                                    logger.debug(f"Fallback: Loading context from scenario file, scenarios_dir={scenarios_dir_fallback}, base_path={base_path_fallback}")
+                                    logger.debug(
+                                        "Fallback: Loading context from scenario file, scenarios_dir=%s, base_path=%s",
+                                        scenarios_dir_fallback,
+                                        base_path_fallback,
+                                    )
                                     
-                                    scenario_context = get_context_files_from_scenario(
+                                    scenario_context = mcp_tools.get_context_files_from_scenario(
                                         scenario_id,
                                         scenarios_dir=scenarios_dir_fallback,
                                         base_path=base_path_fallback
@@ -2704,9 +2718,9 @@ class LoCoBenchEvaluator:
                                             max_chars = effective_max_context * 4
                                             if len(retrieved_context) > max_chars:
                                                 retrieved_context = retrieved_context[:max_chars]
-                                        logger.info(f"✅ Loaded {len(scenario_context)} context files from scenario file")
+                                        logger.info("✅ Loaded %d context files from scenario file", len(scenario_context))
                                     else:
-                                        logger.warning(f"⚠️ No context files found in scenario file for {scenario_id}")
+                                        logger.warning("⚠️ No context files found in scenario file for %s", scenario_id)
                                 except Exception as e3:
                                     logger.warning(f"Could not load context from scenario file fallback: {e3}")
                                     import traceback
@@ -2733,22 +2747,20 @@ class LoCoBenchEvaluator:
                         else:
                             # Last resort: try to get context files from scenario
                             try:
-                                # Try standalone version first (no LangChain deps)
-                                try:
-                                    from ..tools._scenario_retrieval_standalone import get_context_files_from_scenario
-                                except (ImportError, AttributeError):
-                                    from ..tools.scenario_retrieval import get_context_files_from_scenario
-                                base_path = getattr(self.config.data, 'generated_dir', '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated')
+                                base_path = getattr(
+                                    self.config.data,
+                                    'generated_dir',
+                                    '/srv/nfs/VESO/home/polina/trsh/mcp/LoCoBench/data/generated'
+                                )
                                 if not Path(base_path).is_absolute():
                                     base_path = str(Path.cwd() / base_path)
                                 
-                                # Build absolute path for scenarios directory
                                 scenarios_dir = Path(self.config.data.output_dir) / "scenarios"
                                 if not scenarios_dir.is_absolute():
                                     scenarios_dir = Path.cwd() / scenarios_dir
                                 scenarios_dir = str(scenarios_dir.resolve())
                                 
-                                scenario_context = get_context_files_from_scenario(
+                                scenario_context = mcp_tools.get_context_files_from_scenario(
                                     scenario_id,
                                     scenarios_dir=scenarios_dir,
                                     base_path=base_path
@@ -2764,12 +2776,7 @@ class LoCoBenchEvaluator:
                                             retrieved_context = retrieved_context[:max_chars]
                                     logger.info("✅ Loaded context files from scenario file")
                             except Exception as e2:
-                                # Check if it's a LangChain import error
-                                error_str = str(e2)
-                                if "StructuredTool" in error_str or "langchain.tools" in error_str or "cannot import name" in error_str:
-                                    logger.debug(f"LangChain import error when loading scenario context (this is OK): {e2}")
-                                else:
-                                    logger.warning(f"Could not load context from scenario file: {e2}")
+                                logger.warning(f"Could not load context from scenario file: {e2}")
                 else:
                     # No scenario ID, use simple fallback
                     retrieved_context = ""
@@ -3252,7 +3259,7 @@ Generate your response now:"""
         filtered = scenarios
         supported_languages = self.config.phase1.supported_languages
         
-        # Если используем RAG - не фильтруем по языку, иначе применяем фильтр
+        # If RAG is enabled we skip language filtering; otherwise we enforce it
         if supported_languages:
             filtered = [s for s in filtered if self._get_scenario_language(s) in supported_languages]
             logger.info(f"🌍 Language filtering: {len(scenarios)} → {len(filtered)} scenarios")
