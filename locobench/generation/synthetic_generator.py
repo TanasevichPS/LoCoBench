@@ -539,13 +539,28 @@ class MultiLLMGenerator:
 
         async def _make_custom_call():
             async with await self.rate_limiter.acquire("custom"):
-                response = await self.custom_openai_client.chat.completions.create(
-                    model=target_model,
-                    messages=messages,
-                    max_tokens=self.config.api.custom_model_max_tokens,
-                    temperature=self.config.api.custom_model_temperature,
-                    timeout=request_timeout
-                )
+                try:
+                    response = await self.custom_openai_client.chat.completions.create(
+                        model=target_model,
+                        messages=messages,
+                        max_tokens=self.config.api.custom_model_max_tokens,
+                        temperature=self.config.api.custom_model_temperature,
+                        timeout=request_timeout
+                    )
+                except Exception as api_error:
+                    # If the API returns an error, wrap it properly
+                    error_msg = str(api_error)
+                    # Check if the error is a string response (some APIs return errors as strings)
+                    if isinstance(api_error, str):
+                        raise APIError("Custom", "API_ERROR", f"Custom model {target_model} returned error: {error_msg}")
+                    raise APIError("Custom", "API_ERROR", f"Custom model {target_model} API call failed: {error_msg}", original_error=api_error)
+
+            # Validate response object
+            if not hasattr(response, 'choices'):
+                error_msg = f"Invalid response type: {type(response)}. Expected response object with 'choices' attribute."
+                if isinstance(response, str):
+                    error_msg += f" Got string response: {response[:200]}"
+                raise APIError("Custom", "INVALID_RESPONSE", f"Custom model {target_model} {error_msg}")
 
             content = response.choices[0].message.content if response.choices else None
             if content is None or content.strip() == "":

@@ -3054,6 +3054,7 @@ Generate your response now:"""
             # Custom/OSS models (OpenAI-compatible endpoints)
             'gpt-oss': 'custom',
             'gpt-oss-120b': 'custom',
+            'custom-gpt-5-mini': 'custom',
             
             # GPT-4.1 series
             'gpt-4.1': 'openai',
@@ -3207,6 +3208,13 @@ Generate your response now:"""
                                 model_key = f'custom:{model_name}'
                                 target_display = model_name
                                 logger.info(f"⚙️ Calling custom model: {target_display}")
+                            elif normalized_model_name.startswith('custom-'):
+                                # Extract the actual model name from "custom-{model_name}" format
+                                # e.g., "custom-gpt-5-mini" -> "gpt-5-mini"
+                                actual_model_name = model_name[len('custom-'):]
+                                model_key = f'custom:{actual_model_name}'
+                                target_display = actual_model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display} (extracted from {model_name})")
                             else:
                                 # Use config's custom_model_name
                                 target_display = self.llm_generator.config.api.custom_model_name or model_name
