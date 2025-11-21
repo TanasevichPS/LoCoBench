@@ -35,7 +35,7 @@ api:
   custom_model_max_tokens: 1000000
   custom_model_timeout: 600
   custom_model_client_timeout: 3600
-  disable_proxy: false
+  disable_proxy: true  # Set to false if you need proxy, but ensure proxy is working
   response_filters:
     strip_reasoning_tags: true
     reasoning_tags:
