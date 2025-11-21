@@ -3055,6 +3055,7 @@ Generate your response now:"""
             'gpt-oss': 'custom',
             'gpt-oss-120b': 'custom',
             'custom-gpt-5-mini': 'custom',
+            'openai/gpt-5-mini': 'custom',  # Handle "openai/{model}" format for custom endpoints
             
             # GPT-4.1 series
             'gpt-4.1': 'openai',
@@ -3164,6 +3165,11 @@ Generate your response now:"""
             model_key = model_name  # Preserve original casing for downstream logging
         elif normalized_model_name == 'custom':
             model_key = 'custom'
+        elif normalized_model_name.startswith('openai/'):
+            # Handle "openai/{model}" format - treat as custom model
+            # e.g., "openai/gpt-5-mini" -> custom:gpt-5-mini
+            actual_model_name = model_name.split('/', 1)[1]  # Extract model name after "openai/"
+            model_key = f'custom:{actual_model_name}'
         elif '/' in model_name and normalized_model_name not in model_key_mapping:
             # Treat as Hugging Face model directly
             model_key = model_name
@@ -3208,6 +3214,13 @@ Generate your response now:"""
                                 model_key = f'custom:{model_name}'
                                 target_display = model_name
                                 logger.info(f"⚙️ Calling custom model: {target_display}")
+                            elif normalized_model_name.startswith('openai/'):
+                                # Extract the actual model name from "openai/{model_name}" format
+                                # e.g., "openai/gpt-5-mini" -> "gpt-5-mini"
+                                actual_model_name = model_name.split('/', 1)[1]
+                                model_key = f'custom:{actual_model_name}'
+                                target_display = actual_model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display} (extracted from {model_name})")
                             elif normalized_model_name.startswith('custom-'):
                                 # Extract the actual model name from "custom-{model_name}" format
                                 # e.g., "custom-gpt-5-mini" -> "gpt-5-mini"
