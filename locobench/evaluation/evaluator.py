@@ -3167,9 +3167,9 @@ Generate your response now:"""
             model_key = 'custom'
         elif normalized_model_name.startswith('openai/'):
             # Handle "openai/{model}" format - treat as custom model
-            # e.g., "openai/gpt-5-mini" -> custom:gpt-5-mini
-            actual_model_name = model_name.split('/', 1)[1]  # Extract model name after "openai/"
-            model_key = f'custom:{actual_model_name}'
+            # e.g., "openai/gpt-5-mini" -> custom:openai/gpt-5-mini (preserve full name for API)
+            # The API needs the full "openai/gpt-5-mini" name, not just "gpt-5-mini"
+            model_key = f'custom:{model_name}'  # Preserve the full "openai/gpt-5-mini" name
         elif '/' in model_name and normalized_model_name not in model_key_mapping:
             # Treat as Hugging Face model directly
             model_key = model_name
@@ -3215,12 +3215,11 @@ Generate your response now:"""
                                 target_display = model_name
                                 logger.info(f"⚙️ Calling custom model: {target_display}")
                             elif normalized_model_name.startswith('openai/'):
-                                # Extract the actual model name from "openai/{model_name}" format
-                                # e.g., "openai/gpt-5-mini" -> "gpt-5-mini"
-                                actual_model_name = model_name.split('/', 1)[1]
-                                model_key = f'custom:{actual_model_name}'
-                                target_display = actual_model_name
-                                logger.info(f"⚙️ Calling custom model: {target_display} (extracted from {model_name})")
+                                # Preserve the full model name for APIs that need "openai/{model}" format
+                                # e.g., "openai/gpt-5-mini" -> "openai/gpt-5-mini" (keep full name)
+                                model_key = f'custom:{model_name}'
+                                target_display = model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display} (preserving full name for API)")
                             elif normalized_model_name.startswith('custom-'):
                                 # Extract the actual model name from "custom-{model_name}" format
                                 # e.g., "custom-gpt-5-mini" -> "gpt-5-mini"
