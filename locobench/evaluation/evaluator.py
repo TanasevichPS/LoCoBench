@@ -3051,6 +3051,12 @@ Generate your response now:"""
             'gpt-5-chat-latest': 'openai',
             'custom': 'custom',
             
+            # Custom/OSS models (OpenAI-compatible endpoints)
+            'gpt-oss': 'custom',
+            'gpt-oss-120b': 'custom',
+            'custom-gpt-5-mini': 'custom',
+            'openai/gpt-5-mini': 'custom',  # Handle "openai/{model}" format for custom endpoints
+            
             # GPT-4.1 series
             'gpt-4.1': 'openai',
             'gpt-4.1-2025-04-14': 'openai',
@@ -3159,6 +3165,11 @@ Generate your response now:"""
             model_key = model_name  # Preserve original casing for downstream logging
         elif normalized_model_name == 'custom':
             model_key = 'custom'
+        elif normalized_model_name.startswith('openai/'):
+            # Handle "openai/{model}" format - treat as custom model
+            # e.g., "openai/gpt-5-mini" -> custom:openai/gpt-5-mini (preserve full name for API)
+            # The API needs the full "openai/gpt-5-mini" name, not just "gpt-5-mini"
+            model_key = f'custom:{model_name}'  # Preserve the full "openai/gpt-5-mini" name
         elif '/' in model_name and normalized_model_name not in model_key_mapping:
             # Treat as Hugging Face model directly
             model_key = model_name
@@ -3189,12 +3200,40 @@ Generate your response now:"""
                         # Restore original model
                         self.llm_generator.config.api.default_model_google = original_model
                     elif model_key == 'custom' or model_key.startswith('custom:'):
-                        target_display = None
-                        if ':' in model_key:
-                            target_display = model_key.split(':', 1)[1] or None
-                        if not target_display:
-                            target_display = self.llm_generator.config.api.custom_model_name or model_name
-                        logger.info(f"⚙️ Calling custom model: {target_display}")
+                        # For custom models, preserve the original model name if it's a known custom model
+                        # This allows "gpt-oss" to be passed through to the custom endpoint
+                        if model_key == 'custom':
+                            # Use the model_name directly if it's a known custom model (like gpt-oss)
+                            # Map "gpt-oss" to "gpt-oss-120b" to match config's default_model_openai
+                            if normalized_model_name == 'gpt-oss':
+                                # Use gpt-oss-120b as that's what's configured in default_model_openai
+                                model_key = 'custom:gpt-oss-120b'
+                                target_display = 'gpt-oss-120b'
+                                logger.info(f"⚙️ Calling custom model: {target_display} (mapped from gpt-oss)")
+                            elif normalized_model_name == 'gpt-oss-120b':
+                                model_key = f'custom:{model_name}'
+                                target_display = model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display}")
+                            elif normalized_model_name.startswith('openai/'):
+                                # Preserve the full model name for APIs that need "openai/{model}" format
+                                # e.g., "openai/gpt-5-mini" -> "openai/gpt-5-mini" (keep full name)
+                                model_key = f'custom:{model_name}'
+                                target_display = model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display} (preserving full name for API)")
+                            elif normalized_model_name.startswith('custom-'):
+                                # Extract the actual model name from "custom-{model_name}" format
+                                # e.g., "custom-gpt-5-mini" -> "gpt-5-mini"
+                                actual_model_name = model_name[len('custom-'):]
+                                model_key = f'custom:{actual_model_name}'
+                                target_display = actual_model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display} (extracted from {model_name})")
+                            else:
+                                # Use config's custom_model_name
+                                target_display = self.llm_generator.config.api.custom_model_name or model_name
+                                logger.info(f"⚙️ Calling custom model: {target_display}")
+                        else:
+                            target_display = model_key.split(':', 1)[1] if ':' in model_key else model_name
+                            logger.info(f"⚙️ Calling custom model: {target_display}")
                         response = await self.llm_generator.generate_with_model(model_key, solution_prompt)
                     elif '/' in model_key or model_key.startswith('huggingface:') or model_key.startswith('hf:'):
                         # Hugging Face model - use directly

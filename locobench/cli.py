@@ -369,6 +369,100 @@ def evaluate(config_path, model, task_category, difficulty, output_file, no_save
 
 
 @main.command()
+@click.option('--config-path', '-c', type=click.Path(), help='Path to configuration file')
+@click.option('--model', '-m', multiple=True, help='Model to generate summary for (can specify multiple, or omit for all)')
+@click.option('--output-file', '-o', type=click.Path(), help='Output file for summary (auto-generated if not specified)')
+@click.option('--no-save', is_flag=True, help='Skip saving summary to file (display only)')
+def summary(config_path, model, output_file, no_save):
+    """Generate evaluation summary from existing checkpoint results"""
+    console.print(Panel.fit("📊 LoCoBench Summary Generation", style="bold cyan"))
+    
+    try:
+        config = Config.from_yaml(config_path)
+        
+        from .evaluation.evaluator import Evaluator
+        evaluator = Evaluator(config)
+        
+        # Load existing results from checkpoint/incremental files
+        console.print("📂 Loading existing evaluation results...", style="bold")
+        all_results = evaluator._load_incremental_results()
+        
+        if not all_results:
+            console.print("❌ No evaluation results found. Run evaluation first with: locobench evaluate", style="bold red")
+            console.print("   Or check if results exist in:", style="yellow")
+            console.print(f"   • {evaluator.incremental_file}", style="dim")
+            return
+        
+        console.print(f"✅ Loaded {len(all_results)} evaluation results", style="green")
+        
+        # Filter by model if specified
+        if model:
+            model_list = list(model)
+            filtered_results = [r for r in all_results if r.model_name in model_list]
+            if not filtered_results:
+                console.print(f"⚠️  No results found for models: {model_list}", style="yellow")
+                console.print(f"   Available models: {set(r.model_name for r in all_results)}", style="dim")
+                return
+            all_results = filtered_results
+            console.print(f"📊 Filtered to {len(all_results)} results for models: {model_list}", style="cyan")
+        
+        # Group results by model
+        results_by_model = {}
+        for result in all_results:
+            if result.model_name not in results_by_model:
+                results_by_model[result.model_name] = []
+            results_by_model[result.model_name].append(result)
+        
+        console.print(f"🤖 Found results for {len(results_by_model)} model(s): {list(results_by_model.keys())}", style="bold")
+        
+        # Set evaluator's results for display methods that need it
+        evaluator.results = all_results
+        
+        # Generate summaries
+        console.print("\n📊 Generating evaluation summaries...", style="bold")
+        summaries = evaluator.generate_evaluation_summary(results_by_model)
+        
+        if not summaries:
+            console.print("❌ No summaries generated", style="bold red")
+            return
+        
+        # Auto-generate output filename if not provided
+        if not output_file and not no_save:
+            from datetime import datetime
+            from pathlib import Path
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_list = list(results_by_model.keys())
+            models_part = "_".join([m.replace('-', '').replace('_', '').lower() for m in model_list])
+            if len(models_part) > 30:
+                models_part = f"{len(model_list)}models"
+            
+            output_file = f"{models_part}_summary_{timestamp}.json"
+            results_dir = Path("evaluation_results")
+            results_dir.mkdir(exist_ok=True)
+            output_file = results_dir / output_file
+        
+        # Display summaries
+        console.print("\n📊 Evaluation Summary", style="bold green")
+        evaluator.display_results(summaries)
+        
+        # Save summaries (unless explicitly disabled)
+        if not no_save:
+            from pathlib import Path
+            output_path = Path(output_file)
+            evaluator.save_results(results_by_model, summaries, output_path)
+            console.print(f"\n💾 Summary saved to: {output_path}", style="green")
+        else:
+            console.print("\n💡 Summary displayed only (not saved)", style="yellow")
+        
+    except Exception as e:
+        console.print(f"❌ Summary generation failed: {e}", style="bold red")
+        import traceback
+        console.print(traceback.format_exc(), style="dim")
+        sys.exit(1)
+
+
+@main.command()
 def version():
     """Show LoCoBench version information"""
     console.print("🔧 LoCoBench v0.1.0", style="bold blue")

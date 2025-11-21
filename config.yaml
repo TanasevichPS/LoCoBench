@@ -1,5 +1,5 @@
 # LoCoBench Configuration File
-# Configuration for all available Java scenarios: 232 hard + 184 expert = 416 total scenarios
+# Configuration for 16 test instances: 8 hard + 8 expert scenarios (1 language × 2 projects × 8 categories)
 
 # =============================================================================
 # GENERAL CONFIGURATION - API & System Settings
@@ -35,7 +35,7 @@ api:
   custom_model_max_tokens: 1000000
   custom_model_timeout: 600
   custom_model_client_timeout: 3600
-  disable_proxy: false
+  disable_proxy: true  # Set to false if you need proxy, but ensure proxy is working
   response_filters:
     strip_reasoning_tags: true
     reasoning_tags:
@@ -77,12 +77,13 @@ phase1:
   supported_languages:
     - java
   
-  # Project generation distribution - all available Java projects
-  # Note: This will use all existing projects in data/generated/
-  projects_per_language: 100  # High limit to include all available projects
+  # Project generation distribution
+  # Note: For 11 instances with 8 categories, we need: 11 = 1 language × projects × 8 categories
+  # This means projects_per_language should be 11/8, but since we can't have fractional projects,
+  # we'll use 2 projects and adjust task_distribution to sum to 11
+  projects_per_language: 2
   
   # Complexity levels distribution for synthetic projects
-  # Note: Distribution will match existing projects
   complexity_distribution:
     hard: 0.5     # 50% hard projects
     expert: 0.5   # 50% expert projects
@@ -106,25 +107,29 @@ phase2:
 # =============================================================================
 
 phase3:
-  # Scale parameters - all available scenarios: 416 total (232 hard + 184 expert)
-  # Note: This will use all existing scenarios in data/output/scenarios/
-  total_instances: 416
+  # Scale parameters - 16 instances for testing (1 language × 2 projects × 8 categories = 16)
+  # Note: Validation requires: languages × projects × categories = total_instances
+  total_instances: 16
   
   # Task category distribution (must sum to total_instances)
-  # Distributed across all available task categories
+  # With 2 projects, each category gets 2 instances (1 per project)
   task_distribution:
-    architectural_understanding: 104   # 25% - Deep architectural analysis
-    code_comprehension: 104           # 25% - Code flow understanding
-    security_analysis: 104            # 25% - Security audit and analysis
-    feature_implementation: 104       # 25% - Complex feature development
+    architectural_understanding: 2    # 2 instances (1 per project)
+    cross_file_refactoring: 2        # 2 instances (1 per project)
+    feature_implementation: 2        # 2 instances (1 per project)
+    bug_investigation: 2             # 2 instances (1 per project)
+    multi_session_development: 2     # 2 instances (1 per project)
+    code_comprehension: 2            # 2 instances (1 per project)
+    integration_testing: 2           # 2 instances (1 per project)
+    security_analysis: 2             # 2 instances (1 per project)
   
   # Difficulty distribution (must sum to total_instances)
-  # Matches actual scenario distribution: 232 hard + 184 expert
+  # Balanced distribution: 8 hard + 8 expert = 16 total
   difficulty_distribution:
     easy: 0      # 10K-100K tokens 
     medium: 0    # 100K-200K tokens
-    hard: 232    # 200K-500K tokens (232 scenarios)
-    expert: 184  # 500K-1000K tokens (184 scenarios)
+    hard: 8      # 200K-500K tokens (8 scenarios)
+    expert: 8    # 500K-1000K tokens (8 scenarios)
   
   # Context length ranges (min_tokens, max_tokens)
   context_ranges:

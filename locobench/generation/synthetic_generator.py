@@ -493,6 +493,21 @@ class MultiLLMGenerator:
         if not base_url:
             raise APIError("Custom", "CONFIG_ERROR", "Custom model base URL not configured. Set api.custom_model_base_url or OPENAI_BASE_URL env.")
         base_url = base_url.rstrip("/")
+        
+        # Log the configuration being used
+        # Check both config and environment variable for disable_proxy
+        # Handle both boolean and string values from config
+        disable_proxy_config_raw = getattr(self.config.api, 'disable_proxy', False)
+        if isinstance(disable_proxy_config_raw, str):
+            disable_proxy_config = disable_proxy_config_raw.lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            disable_proxy_config = bool(disable_proxy_config_raw)
+        
+        disable_proxy_env = os.getenv('OPENAI_DISABLE_PROXY', '').lower() in {'1', 'true', 'yes', 'on'}
+        disable_proxy = disable_proxy_env if disable_proxy_env else disable_proxy_config
+        
+        self.logger.info(f"🔗 Custom model configuration: base_url={base_url}, model={target_model}")
+        self.logger.info(f"   Proxy settings: config={disable_proxy_config}, env={disable_proxy_env}, final={disable_proxy}")
 
         api_key = self.config.api.custom_model_api_key or self.config.api.openai_api_key
         if not api_key:
@@ -519,9 +534,42 @@ class MultiLLMGenerator:
             if client_timeout:
                 client_kwargs["timeout"] = client_timeout
 
-            if self.config.api.disable_proxy:
-                self._custom_http_client = httpx.AsyncClient(trust_env=False)
-                client_kwargs["http_client"] = self._custom_http_client
+            # Always create a custom HTTP client to have better control over proxy settings
+            # If disable_proxy is True, trust_env=False will ignore proxy env vars
+            # If disable_proxy is False, trust_env=True will use proxy env vars if set
+            # Check both config and environment variable for disable_proxy
+            # Handle both boolean and string values from config
+            disable_proxy_config_raw = getattr(self.config.api, 'disable_proxy', False)
+            if isinstance(disable_proxy_config_raw, str):
+                disable_proxy_config = disable_proxy_config_raw.lower() in {'1', 'true', 'yes', 'on'}
+            else:
+                disable_proxy_config = bool(disable_proxy_config_raw)
+            
+            disable_proxy_env = os.getenv('OPENAI_DISABLE_PROXY', '').lower() in {'1', 'true', 'yes', 'on'}
+            disable_proxy = disable_proxy_env if disable_proxy_env else disable_proxy_config
+            trust_env = not disable_proxy
+            
+            # Create HTTP client with appropriate timeout settings
+            # Use longer connect timeout to handle slow connections
+            connect_timeout = 60.0  # 60 seconds to establish connection
+            read_timeout = client_timeout if client_timeout else 600.0  # Use configured timeout for reading
+            
+            # Create HTTP client with proxy and SSL settings
+            http_client_kwargs = {
+                "trust_env": trust_env,
+                "timeout": httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=30.0),
+                "limits": httpx.Limits(max_keepalive_connections=5, max_connections=10),
+                "follow_redirects": True,
+            }
+            
+            # If proxy is disabled, explicitly set proxies to None to avoid any env var interference
+            if disable_proxy:
+                http_client_kwargs["proxies"] = None
+            
+            self._custom_http_client = httpx.AsyncClient(**http_client_kwargs)
+            client_kwargs["http_client"] = self._custom_http_client
+            
+            self.logger.info(f"🔧 Custom HTTP client configured: trust_env={trust_env}, disable_proxy={disable_proxy}, connect_timeout={connect_timeout}s, read_timeout={read_timeout}s")
 
             self.custom_openai_client = openai.AsyncOpenAI(**client_kwargs)
             self._custom_client_signature = signature
@@ -539,13 +587,45 @@ class MultiLLMGenerator:
 
         async def _make_custom_call():
             async with await self.rate_limiter.acquire("custom"):
-                response = await self.custom_openai_client.chat.completions.create(
-                    model=target_model,
-                    messages=messages,
-                    max_tokens=self.config.api.custom_model_max_tokens,
-                    temperature=self.config.api.custom_model_temperature,
-                    timeout=request_timeout
-                )
+                try:
+                    response = await self.custom_openai_client.chat.completions.create(
+                        model=target_model,
+                        messages=messages,
+                        max_tokens=self.config.api.custom_model_max_tokens,
+                        temperature=self.config.api.custom_model_temperature,
+                        timeout=request_timeout
+                    )
+                except Exception as api_error:
+                    # If the API returns an error, wrap it properly with more details
+                    error_msg = str(api_error)
+                    error_type = type(api_error).__name__
+                    
+                    # Log more details about connection errors
+                    if "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                        disable_proxy = getattr(self.config.api, 'disable_proxy', False)
+                        self.logger.error(f"🔴 Connection error details for {target_model} @ {base_url}:")
+                        self.logger.error(f"   Error type: {error_type}")
+                        self.logger.error(f"   Error message: {error_msg}")
+                        self.logger.error(f"   Proxy disabled: {disable_proxy}")
+                        self.logger.error(f"   Base URL: {base_url}")
+                        # Log the original error if available
+                        if hasattr(api_error, '__cause__') and api_error.__cause__:
+                            self.logger.error(f"   Original error: {type(api_error.__cause__).__name__}: {str(api_error.__cause__)}")
+                        if hasattr(api_error, 'request') and api_error.request:
+                            self.logger.error(f"   Request URL: {api_error.request.url}")
+                            self.logger.error(f"   Request method: {api_error.request.method}")
+                    
+                    # Check if the error is a string response (some APIs return errors as strings)
+                    if isinstance(api_error, str):
+                        raise APIError("Custom", "API_ERROR", f"Custom model {target_model} returned error: {error_msg}")
+                    raise APIError("Custom", "API_ERROR", f"Custom model {target_model} API call failed: {error_type}: {error_msg}", original_error=api_error)
+
+            # Validate response object
+            if not hasattr(response, 'choices'):
+                error_msg = f"Invalid response type: {type(response)}. Expected response object with 'choices' attribute."
+                if isinstance(response, str):
+                    error_msg += f" Got string response: {response[:200]}"
+                raise APIError("Custom", "INVALID_RESPONSE", f"Custom model {target_model} {error_msg}")
 
             content = response.choices[0].message.content if response.choices else None
             if content is None or content.strip() == "":
