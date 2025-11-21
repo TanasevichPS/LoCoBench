@@ -1,5 +1,5 @@
 # LoCoBench Configuration File
-# Configuration for 11 test instances: 6 hard + 5 expert scenarios
+# Configuration for 16 test instances: 8 hard + 8 expert scenarios (1 language × 2 projects × 8 categories)
 
 # =============================================================================
 # GENERAL CONFIGURATION - API & System Settings
@@ -78,6 +78,9 @@ phase1:
     - java
   
   # Project generation distribution
+  # Note: For 11 instances with 8 categories, we need: 11 = 1 language × projects × 8 categories
+  # This means projects_per_language should be 11/8, but since we can't have fractional projects,
+  # we'll use 2 projects and adjust task_distribution to sum to 11
   projects_per_language: 2
   
   # Complexity levels distribution for synthetic projects
@@ -104,28 +107,29 @@ phase2:
 # =============================================================================
 
 phase3:
-  # Scale parameters - 11 instances for testing
-  total_instances: 11
+  # Scale parameters - 16 instances for testing (1 language × 2 projects × 8 categories = 16)
+  # Note: Validation requires: languages × projects × categories = total_instances
+  total_instances: 16
   
   # Task category distribution (must sum to total_instances)
-  # Distributed across all available task categories
+  # With 2 projects, each category gets 2 instances (1 per project)
   task_distribution:
-    architectural_understanding: 2    # 2 instances
-    cross_file_refactoring: 1        # 1 instance
-    feature_implementation: 2        # 2 instances
-    bug_investigation: 1             # 1 instance
-    multi_session_development: 1     # 1 instance
-    code_comprehension: 2            # 2 instances
-    integration_testing: 1           # 1 instance
-    security_analysis: 1             # 1 instance
+    architectural_understanding: 2    # 2 instances (1 per project)
+    cross_file_refactoring: 2        # 2 instances (1 per project)
+    feature_implementation: 2        # 2 instances (1 per project)
+    bug_investigation: 2             # 2 instances (1 per project)
+    multi_session_development: 2     # 2 instances (1 per project)
+    code_comprehension: 2            # 2 instances (1 per project)
+    integration_testing: 2           # 2 instances (1 per project)
+    security_analysis: 2             # 2 instances (1 per project)
   
   # Difficulty distribution (must sum to total_instances)
-  # Balanced distribution: 6 hard + 5 expert = 11 total
+  # Balanced distribution: 8 hard + 8 expert = 16 total
   difficulty_distribution:
     easy: 0      # 10K-100K tokens 
     medium: 0    # 100K-200K tokens
-    hard: 6      # 200K-500K tokens (6 scenarios)
-    expert: 5    # 500K-1000K tokens (5 scenarios)
+    hard: 8      # 200K-500K tokens (8 scenarios)
+    expert: 8    # 500K-1000K tokens (8 scenarios)
   
   # Context length ranges (min_tokens, max_tokens)
   context_ranges:
