@@ -1,5 +1,8 @@
 # Locobench Features Impact Report
 
+## Project Overview
+LoCoBench is a comprehensive benchmark designed to evaluate long-context Large Language Models (LLMs) in complex software development scenarios. The project provides 8,000 evaluation scenarios across 10 programming languages with context lengths spanning 10K to 1M tokens.
+
 ## Executive Summary: Evolution & Score Impact
 
 | Version | Score | Key Features | Main Improvements |
@@ -137,3 +140,6 @@
 - **Score:** 2.266.
 - **Context:** ~20k prompt length.
 - **Analysis:** Highest achieved score, driven by better handling of model outputs and environment alignment.
+
+## Conclusion
+For the majority of models, the original implementation remains suitable, as the benchmark demonstrates limited sensitivity to alternative implementations.
