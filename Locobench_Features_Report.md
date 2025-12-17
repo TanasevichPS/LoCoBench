@@ -11,6 +11,7 @@
 | **v4** | ~2.07 | Task Specialization | Category-specific parameters |
 | **v5** | 2.115 (max) | Iterative Optimization | Adaptive strategy by task type |
 | **v6** | 2.197 | MCP Integration | Model Context Protocol, tool-based selection |
+| **v7** | 2.11 | Original Reranker + Multi-Query | Integrated reranker with custom retriever |
 | **v8** | 2.266 | Response Processing | Improved model response processing |
 
 ---
@@ -117,7 +118,16 @@
 - **Score:** 2.197.
 - **Analysis:** Significant jump in score due to intelligent, agentic file selection.
 
-### 7. Response Processing & Environment Adaptation (Version 8)
+### 7. Original Reranker + Multi-Query Retrieval (Version 7)
+**Feature:**
+- **Integration:** Integrated the original LocoBench reranker with custom Retriever logic from Version 3.
+- **Mechanism:** Combined specialized query strategies and adaptive hybrid alpha with the reranker.
+
+**Impact & Results:**
+- **Score:** 2.11.
+- **Analysis:** Validated the combination of reranking with specialized queries.
+
+### 8. Response Processing & Environment Adaptation (Version 8)
 **Feature:**
 - **Response Processing:** Improved model response processing logic.
 - **Adaptation:** Aligned benchmark with current environment.
