@@ -16,6 +16,7 @@ LoCoBench is a comprehensive benchmark designed to evaluate long-context Large L
 | **v6** | 2.197 | MCP Integration | Model Context Protocol, tool-based selection |
 | **v7** | 2.11 | Original Reranker + Multi-Query | Integrated reranker with custom retriever |
 | **v8** | 2.266 | Response Processing | Improved model response processing |
+| **v9** | Experimental | MCP Heuristics (No-LLM) | Pure heuristic selection without LLM dependency |
 
 ---
 
@@ -140,6 +141,22 @@ LoCoBench is a comprehensive benchmark designed to evaluate long-context Large L
 - **Score:** 2.266.
 - **Context:** ~20k prompt length.
 - **Analysis:** Highest achieved score, driven by better handling of model outputs and environment alignment.
+
+### 9. MCP Heuristics (No-LLM Mode) (Version 9)
+**Feature:**
+- **Logic:** Pure heuristic-based selection implementing the MCP tool interface but without LLM calls.
+- **Mechanism:** 
+    - Extracts keywords from the task prompt.
+    - Applies category-specific term expansion (e.g., adding "auth", "validate" for Security tasks).
+    - Executes specialized heuristic tools (`find_security_sensitive_files`, `identify_core_components`).
+- **Goal:** Create a fast, reliable fallback mechanism that outperforms standard retrieval without API dependencies.
+
+**Impact & Results:**
+- **Score:** Experimental (Intermediate between standard retrieval and full LLM-MCP).
+- **Analysis:**
+    - **Speed:** significantly faster than LLM-based selection.
+    - **Reliability:** 100% deterministic with no API failure modes.
+    - **Comparison:** Rated ~3 stars for accuracy (vs 2 for standard, 4 for LLM-based).
 
 ## Conclusion
 For the majority of models, the original implementation remains suitable, as the benchmark demonstrates limited sensitivity to alternative implementations.
