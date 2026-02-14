@@ -10,14 +10,14 @@ retrieval:
     - hard
     - expert
   enabled: true
-  top_percent: 0.22  # Increased from 0.20 to 0.22 for better coverage (architectural tasks get 1.4x = 30.8%)
+  top_percent: 0.28  # Increased to surface more context for comprehension-heavy categories
   max_context_tokens: 100000  # Increased from 25000 to 100000 (~25K tokens, comparable to truncation)
   method: embedding
   model_name: all-MiniLM-L6-v2
   local_model_path: null
   top_k: 10  # Increased from 5 to 10 as fallback
   smart_chunking: true  # Enable smart chunking: select most relevant chunks from files
-  chunks_per_file: 8  # Increased from 5 to 8 - more chunks per file for better coverage
+  chunks_per_file: 10  # Further increased to capture more of each file for comprehension tasks
   retrieval_chunk_size: 2500  # Increased from 2000 to 2500 - larger chunks are more informative
   use_multi_query: true  # Enable Multi-Query Retrieval for better coverage (5 queries)
   use_hybrid_search: true  # Enable Hybrid Search (semantic + BM25) for better accuracy
@@ -36,6 +36,24 @@ api:
   custom_model_timeout: 600
   custom_model_client_timeout: 3600
   disable_proxy: false
+  response_filters:
+    strip_reasoning_tags: true
+    reasoning_tags:
+      - think
+      - analysis
+      - reasoning
+    unwrap_output_tags:
+      - final
+      - output
+      - response
+    enforce_code_only: true
+    code_only_triggers:
+      - "Output only the code without any explanations"
+      - "Return only the code"
+      - "Respond with raw JSON"
+    custom_regex_filters:
+      - pattern: "(?i)^\\s*Here(?:'|)s the (?:solution|code)\\s*:?\\s*"
+        replacement: ""
   
   # Rate limiting settings
   max_requests_per_minute: 1

@@ -26,6 +26,7 @@ from rich.progress import Progress, TaskID
 from ..core.config import Config
 from ..core.task import TaskCategory, DifficultyLevel
 from ..utils.rate_limiter import APIRateLimitManager
+from ..utils.response_filters import ModelResponseFilter
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -310,6 +311,7 @@ class MultiLLMGenerator:
         self.custom_openai_client: Optional[openai.AsyncOpenAI] = None
         self._custom_client_signature: Optional[Tuple[str, str]] = None
         self.setup_llm_clients()
+        self.response_filter = ModelResponseFilter(getattr(config.api, "response_filters", None))
         
         # Generator specialization (using 2 Elite Models)
         # ✅ OpenAI o3: Best reasoning model | ✅ Gemini 2.5 Pro: Reliable with 1M+ token limits
@@ -358,6 +360,19 @@ class MultiLLMGenerator:
         else:
             self.logger.info("✅ 3-Elite-Model generator initialized (OpenAI o3 + Gemini 2.5 Pro + Claude 4 Bearer Token)")
             self.logger.warning("⚠️ Hugging Face models not available (transformers/torch not installed)")
+
+    def _post_process_response(self, response: Optional[str], prompt: Optional[str]) -> Optional[str]:
+        """Apply response filters and log when the content changes."""
+        if response is None or not self.response_filter:
+            return response
+        filtered = self.response_filter.apply(response, prompt=prompt)
+        if filtered != response:
+            self.logger.debug(
+                "✂️ Response post-processing trimmed output from %d to %d chars",
+                len(response),
+                len(filtered),
+            )
+        return filtered
     
     async def generate_with_openai(self, prompt: str, system_prompt: str = None) -> str:
         """Generate content using OpenAI with retry logic and rate limiting"""
@@ -464,7 +479,8 @@ class MultiLLMGenerator:
                     self.logger.info(f"✅ OpenAI returned valid content: {content[:100]}...")
                 return content
         
-        return await retry_with_backoff(_make_openai_call, provider="OpenAI o3")
+        content = await retry_with_backoff(_make_openai_call, provider="OpenAI o3")
+        return self._post_process_response(content, prompt)
     
     async def generate_with_custom_model(self, prompt: str, system_prompt: str = None, model_override: Optional[str] = None) -> str:
         """Generate content using a custom OpenAI-compatible endpoint"""
@@ -539,7 +555,8 @@ class MultiLLMGenerator:
             return content
 
         try:
-            return await retry_with_backoff(_make_custom_call, provider=f"Custom {target_model}")
+            content = await retry_with_backoff(_make_custom_call, provider=f"Custom {target_model}")
+            return self._post_process_response(content, prompt)
         except APIError:
             raise
         except asyncio.TimeoutError as e:
@@ -591,7 +608,8 @@ class MultiLLMGenerator:
                     raise APIError("Gemini 2.5 Pro", "EMPTY_RESPONSE", "Gemini returned empty content")
                 return content
         
-        return await retry_with_backoff(_make_google_call, provider="Gemini 2.5 Pro")
+        content = await retry_with_backoff(_make_google_call, provider="Gemini 2.5 Pro")
+        return self._post_process_response(content, prompt)
     
     async def generate_with_claude(self, prompt: str, model_name: str = "claude-sonnet-4", system_prompt: str = None) -> str:
         """Generate content using Claude models via Bearer Token authentication"""
@@ -692,7 +710,8 @@ class MultiLLMGenerator:
         
         # Apply rate limiting and retry logic (reduced retries for Bearer token)
         async with await self.rate_limiter.acquire("claude"):
-            return await retry_with_backoff(_make_claude_call, max_retries=2, base_delay=3.0, max_delay=60.0, provider=f"Claude {model_name}")
+            content = await retry_with_backoff(_make_claude_call, max_retries=2, base_delay=3.0, max_delay=60.0, provider=f"Claude {model_name}")
+            return self._post_process_response(content, prompt)
     
     async def generate_with_huggingface(self, model_name: str, prompt: str, system_prompt: str = None) -> str:
         """Generate content using Hugging Face models (local inference)"""
@@ -789,7 +808,8 @@ class MultiLLMGenerator:
         
         # Apply rate limiting (lower rate for local models)
         async with await self.rate_limiter.acquire("huggingface"):
-            return await retry_with_backoff(_make_hf_call, max_retries=2, base_delay=1.0, max_delay=30.0, provider=f"HuggingFace {model_name}")
+            content = await retry_with_backoff(_make_hf_call, max_retries=2, base_delay=1.0, max_delay=30.0, provider=f"HuggingFace {model_name}")
+            return self._post_process_response(content, prompt)
     
     async def generate_with_model(self, model_type: str, prompt: str, system_prompt: str = None) -> str:
         """Generate content with specified model type (OpenAI o3, Gemini 2.5 Pro, Claude, or Hugging Face)"""
